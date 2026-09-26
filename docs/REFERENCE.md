@@ -560,13 +560,23 @@ motita gateway status   # says whether one is running, where, and WHICH BUILD
 motita gateway stop     # stops the one the service file names
 ```
 
-Both commands name the build they found — `the gateway is running at
+Those commands name the build they found — `the gateway is running at
 http://127.0.0.1:7477 (pid 1234, v0.5.0-70-g9e7baf4)` — because "is one running" is
 only half the question. After installing a new binary over an old one, the service
 still running can be the **previous build**, and nothing else in the program would
 say so. The version is the one the gateway reports about itself through
 `/v1/health`, so it names the process that is actually answering rather than the
 binary you happen to have on disk.
+
+The library has the same shape of commands, described in
+[The skill library](#the-skill-library) below:
+
+```bash
+motita curator status   # the thresholds, the last pass, and the lifecycle counts
+motita curator run      # one pass now (--consolidate, --dry-run)
+motita curator pin build-firmware
+motita curator list-archived
+```
 
 The interface draws the same version under the wordmark, and it always names the build
 that is **actually answering**. An interface speaking through a gateway in its own
@@ -911,6 +921,72 @@ such work deliberately, which is the documented escape hatch for an unattended j
 not a new guardrail and it is not configurable per task: a switch a task could flip is how
 a guardrail gets switched off during the incident it was meant for.
 
+### The skill library
+
+The library described in the README is served whole: the documents, their
+lifecycle, and the maintenance pass that keeps them honest.
+
+```yaml
+skills:
+  dir: ~/.motita/skills    # where the documents live
+  max_file_bytes: 65536    # a bigger document is refused, not truncated
+
+curator:
+  enabled: true            # run the maintenance pass on its own
+  interval_hours: 168      # how often: a week
+  min_idle_minutes: 120    # and only when nobody has been talking for two hours
+  stale_after_days: 14     # unused for this long, and it is marked stale
+  archive_after_days: 30   # stale for this long, and it moves to the archive
+  consolidate: false       # let the model merge overlapping documents
+```
+
+| Endpoint | What it does |
+|---|---|
+| `GET /v1/skills` | the index: name, title, summary, path, and the lifecycle telemetry |
+| `GET /v1/skills/{name}` | one document, **with its body** |
+| `POST /v1/skills` | write one: `name`, `body` — creates or replaces |
+| `POST /v1/skills/{name}/pin` | `{"pinned":true}` exempts it from every automatic transition |
+| `GET /v1/skills/archived` | the names of everything in the archive |
+| `POST /v1/skills/{name}/restore` | bring an archived document back |
+| `GET /v1/curator` | the thresholds, the last pass, and the lifecycle counts |
+| `POST /v1/curator/run` | run one pass now: `consolidate`, `dry_run` |
+
+```bash
+TOKEN="$(cat ~/.motita/gateway.token)"
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7477/v1/skills
+# {"skills":[{"name":"build-firmware","title":"Build the firmware",...}]} — never null
+
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7477/v1/skills/archived
+# {"skills":[]} — an unreadable archive is a 500, NOT an empty list
+```
+
+**The index carries no body, deliberately.** Forty procedures fetched to draw forty
+titles is how a panel feels slow for no reason, and the body is only what a user
+opens a document to read. The lifecycle telemetry rides along instead, so a list can
+show state without a round trip per row.
+
+**An unreadable library is not an empty one.** Both list endpoints answer `500` when
+the directory cannot be read, rather than an empty list: a browser that drew "no
+skills" over a broken directory would send the user looking for documents they still
+have.
+
+From the terminal it is the same library:
+
+```bash
+motita curator status        # thresholds, last pass, lifecycle counts
+motita curator run           # one pass now; --consolidate to use the model, --dry-run to see the plan
+motita curator pin build-firmware
+motita curator unpin build-firmware
+motita curator list-archived
+motita curator restore build-firmware
+```
+
+**`curator status`, `pin`, `unpin`, `restore` and `list-archived` never need an API
+key**, and each one still reads a configuration that names no key — tidying a shelf
+is filesystem work, and requiring a model to sort files is requiring a model to do
+something that does not use one. `--consolidate` is the exception, deliberately: that
+IS the path that talks to a model, so it is the one that needs the key.
+
 ### What runs silently, and why that is a design decision
 
 The confirmation layer is the part operators actually feel, because it is the part
@@ -1131,6 +1207,12 @@ internal/template/    the {{...}} variables of the prompts
 internal/app/         program logic (options, layers, shutdown, TUI wiring)
 internal/tui/         interactive text user interface (stdlib only)
 internal/plan/        read-only plan/chat mode with native tool calling
+internal/skills/        the procedure library: the documents, and their archive
+internal/curator/       the maintenance pass: stale, archive, and consolidation
+internal/procedures/    the library as the tools see it (search, load, save)
+internal/usage/         the ledger next to the shelf (/good, /bad, lifecycle telemetry)
+internal/gateway/       HTTP + WebSocket gateway (sessions, projects, schedules, skills)
+internal/webui/         the browser interface's built assets
 internal/logx/        JSON logging with rotation
 internal/readonly/    structural read-only guarantee (no shell + allowlist)
 tools/mockapi/        OpenAI-compatible API for end-to-end tests
