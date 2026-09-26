@@ -518,8 +518,9 @@ anything else you want to build on top.
 Left alone, a shelf rots: procedures that stopped being true stay listed as if they
 still were. So a **curator** runs on its own — a week apart, and only when nobody
 has been talking for two hours, because a maintenance pass that fights your
-conversation for the process is a maintenance pass you will turn off. It uses **no
-model** for the work that matters:
+conversation for the process is a maintenance pass you will turn off. It touches
+**only the documents the agent wrote**: one you wrote by hand is yours, and the
+curator never ages it. And it uses **no model** for the work that matters:
 
 ```mermaid
 flowchart LR
