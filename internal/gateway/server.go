@@ -122,6 +122,15 @@ type Options struct {
 	// WorkspaceDir is the root workspace under which project folders are
 	// created. Required when ProjectDir is set.
 	WorkspaceDir string
+	// Skills is the procedure library this gateway serves. Nil makes the skill
+	// endpoints answer 501 rather than 404: "this gateway was started without a
+	// library" is a different fact from "there is no such skill", and a client acts
+	// differently on each - the same distinction CreateProject already draws for
+	// projects.
+	Skills SkillService
+	// Curator is the maintenance pass these endpoints can trigger. Nil makes them
+	// answer the same 501.
+	Curator CuratorService
 }
 
 // Server is the HTTP face of the conversations this process holds.
@@ -464,6 +473,23 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("DELETE /v1/schedules/{id}", plain(s.handleDeleteSchedule))
 	mux.Handle("POST /v1/schedules/{id}/run", plain(s.handleRunScheduleNow))
 	mux.Handle("GET /v1/commands", plain(s.handleListCommands))
+
+	// The procedure library and its maintenance pass. PROCESS-WIDE, like /v1/projects
+	// and /v1/commands: a skill is not a property of one conversation, and the ledger
+	// behind it is shared by every conversation this process holds.
+	//
+	// "GET /v1/skills/archived" is registered EXPLICITLY and it is more specific than
+	// "GET /v1/skills/{name}", so it wins: a skill that happens to be called "archived"
+	// is still reachable by opening it from the index. That precedence is asserted by a
+	// test rather than trusted to the mux.
+	mux.Handle("GET /v1/skills", plain(s.handleSkills))
+	mux.Handle("POST /v1/skills", plain(s.handleSaveSkill))
+	mux.Handle("GET /v1/skills/archived", plain(s.handleArchivedSkills))
+	mux.Handle("GET /v1/skills/{name}", plain(s.handleSkill))
+	mux.Handle("POST /v1/skills/{name}/pin", plain(s.handlePinSkill))
+	mux.Handle("POST /v1/skills/{name}/restore", plain(s.handleRestoreSkill))
+	mux.Handle("GET /v1/curator", plain(s.handleCurator))
+	mux.Handle("POST /v1/curator/run", plain(s.handleCuratorRun))
 
 	// Self-update endpoints: check for a newer release and stream the upgrade.
 	// These are plain (not scoped to a session) because the upgrade is about
