@@ -198,6 +198,12 @@ Commands:
   gateway stop       stop the gateway named by the service file
   gateway status     report whether a gateway is running
 
+  curator status     report the thresholds, the last run and the lifecycle counts
+  curator run        run one maintenance pass now (--consolidate, --dry-run)
+  curator pin|unpin  exempt a skill from every automatic transition, or stop
+  curator restore    bring an archived skill back
+  curator list-archived  everything in the skills archive
+
 The gateway listens on every interface by default and enforces no origin rules: it is
 reachable the way a machine with a fresh, empty firewall table is. Narrow it by adding
 rules to gateway.allow - "lan", an address, a network, or "!any" for this machine only.
@@ -229,6 +235,17 @@ type flags struct {
 	// gatewayAction is the action of `motita gateway <action>`. A POSITIONAL argument, not a
 	// flag, which is why it is read before the flag loop rather than inside it.
 	gatewayAction string
+	// curatorAction is the action of `motita curator <action>`, curatorSkill the name some
+	// of them take, and the two switches are `curator run`'s. Positional like
+	// gatewayAction, and read the same way and for the same reason.
+	//
+	// The two switches take NO value and are deliberately ABSENT from valueFlags: a
+	// boolean flag that consumed the next argument would swallow a word the user meant as
+	// a command.
+	curatorAction      string
+	curatorSkill       string
+	curatorConsolidate bool
+	curatorDryRun      bool
 }
 
 // Run is the program's entry point: it parses the arguments, builds the three
@@ -280,6 +297,13 @@ func Run(op Options) int {
 	// this process, and `stop` and `status` only read a file and ask a port a question.
 	if fl.gatewayAction != "" {
 		return op.runGatewayCommand(op.BaseCtx, fl.gatewayAction, fl)
+	}
+
+	// The curator is the same kind of command and is checked after it, so a line carrying
+	// both is not ambiguous: the gateway action is read first, and a `curator` word on the
+	// same line is read by ITS dispatch.
+	if fl.curatorAction != "" {
+		return op.runCuratorCommand(op.BaseCtx, fl)
 	}
 
 	return op.run(fl)
@@ -387,39 +411,76 @@ func flagValues(args []string) []bool {
 func parse(args []string) (flags, error) {
 	var b flags
 
-	// The subcommand is read FIRST, because it is a POSITIONAL argument and the loop below is
+	// The subcommands are read FIRST, because they are POSITIONAL arguments and the loop below is
 	// written for flags: `motita gateway start` reaching that loop would be reported as an
 	// unknown flag named "gateway", which is a confusing way to say the user used the right word in
 	// the right place.
 	//
-	// It is found by scanning for the word while SKIPPING the values of flags, which is why there is
-	// a list of the flags that take one. Without that skipping, `-session gateway` would be read as
-	// the subcommand and `motita -session gateway -connect host` would start a SERVICE instead of
-	// a client that attaches to a conversation called "gateway".
-	skip := flagValues(args)
-	action := ""
-	for i := 0; i < len(args); i++ {
-		if skip[i] || args[i] != "gateway" {
-			continue
+	// They are found by scanning for the word while SKIPPING the values of flags, which is why there
+	// is a list of the flags that take one. Without that skipping, `-session gateway` would be read
+	// as the subcommand and `motita -session gateway -connect host` would start a SERVICE instead
+	// of a client that attaches to a conversation called "gateway".
+	//
+	// The scan RESTARTS after every word it removes, so one line can carry two subcommands
+	// (`motita gateway start curator status`) without the second being read at a stale index.
+	for {
+		skip := flagValues(args)
+		consumed := false
+		for i := 0; i < len(args); i++ {
+			if skip[i] {
+				continue
+			}
+			switch args[i] {
+			case "gateway":
+				if i+1 >= len(args) {
+					return b, fmt.Errorf("gateway needs an action: start, stop or status")
+				}
+				switch strings.ToLower(strings.TrimSpace(args[i+1])) {
+				case "start", "stop", "status":
+					// Recorded as the user wrote it: what they typed is what gets reported.
+					b.gatewayAction = args[i+1]
+					// Removed from the argument list so the flag loop below never sees them: a
+					// positional argument is not a flag, and leaving it there would end in
+					// "unknown flag: gateway".
+					args = append(append([]string{}, args[:i]...), args[i+2:]...)
+				default:
+					// Rejected with the list rather than ignored: falling through would turn a
+					// typo into something else entirely - `motita gateway strat` starting the
+					// interface.
+					return b, fmt.Errorf("unknown gateway action %q: start, stop or status", args[i+1])
+				}
+				consumed = true
+			case "curator":
+				if i+1 >= len(args) {
+					return b, fmt.Errorf("curator needs an action: %s", curatorActions)
+				}
+				action := strings.ToLower(strings.TrimSpace(args[i+1]))
+				switch action {
+				case "status", "run", "list-archived":
+					b.curatorAction = action
+					args = append(append([]string{}, args[:i]...), args[i+2:]...)
+				case "pin", "unpin", "restore":
+					if i+2 >= len(args) {
+						return b, fmt.Errorf("curator %s needs a skill name", action)
+					}
+					b.curatorAction = action
+					// The name is data and is kept EXACTLY as typed: it is not an action, so
+					// lower-casing it would be inventing a skill the user did not name.
+					b.curatorSkill = strings.TrimSpace(args[i+2])
+					args = append(append([]string{}, args[:i]...), args[i+3:]...)
+				default:
+					return b, fmt.Errorf("unknown curator action %q: %s", args[i+1], curatorActions)
+				}
+				consumed = true
+			}
+			if consumed {
+				break
+			}
 		}
-		if i+1 >= len(args) {
-			return b, fmt.Errorf("gateway needs an action: start, stop or status")
+		if !consumed {
+			break
 		}
-		switch strings.ToLower(strings.TrimSpace(args[i+1])) {
-		case "start", "stop", "status":
-			// Recorded as the user wrote it: what they typed is what gets reported back.
-			action = args[i+1]
-			// Removed from the argument list so the flag loop below never sees them: a positional
-			// argument is not a flag, and leaving it there would end in "unknown flag: gateway".
-			args = append(append([]string{}, args[:i]...), args[i+2:]...)
-		default:
-			// Rejected with the list rather than ignored: falling through would turn a typo into
-			// something else entirely - `motita gateway strat` starting the interface.
-			return b, fmt.Errorf("unknown gateway action %q: start, stop or status", args[i+1])
-		}
-		break
 	}
-	b.gatewayAction = action
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -504,6 +565,13 @@ func parse(args []string) (flags, error) {
 			b.version = true
 		case "-isolation", "--isolation":
 			b.isolation = true
+		// The switches of `curator run`. They take NO value: a boolean flag that consumed
+		// the argument after it would swallow a word the user meant as a command, which is
+		// why neither appears in valueFlags.
+		case "-consolidate", "--consolidate":
+			b.curatorConsolidate = true
+		case "-dry-run", "--dry-run":
+			b.curatorDryRun = true
 		case "-h", "-help", "--help":
 			return b, fmt.Errorf("help requested")
 		case "":
@@ -601,19 +669,35 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// loadPreferringKey loads the configuration, tolerating a missing key in the two
-// modes that do not call the LLM.
+// loadPreferringKey loads a configuration, and falls back to loading it WITHOUT a key for the
+// invocations that provably never call a model.
 //
-// Those modes (-validar-config, -aislamiento) exist to check the file, and there
-// not having a key is legitimate. An invalid file is still an error everywhere: a
-// mode that replaced a broken file with the defaults and then reported "valid
-// configuration" would hide the only thing it was asked to check.
+// The key is checked while the file is read, so a valid configuration with no key is an error
+// - which is right for a run and wrong for every diagnostic. Those modes (-validate-config,
+// -isolation) exist to CHECK the file, and not having a key is legitimate there. The curator
+// is in this list for the same reason: tidying the library is filesystem work, and requiring a
+// model to sort files would be requiring a model to do something that does not use one. The
+// ONE curator path that does call a model, --consolidate, is deliberately excluded: it asks
+// for the engine itself, and a missing key there is a real error with a real message.
+//
+// An invalid file is still an error everywhere: a mode that replaced a broken file with the
+// defaults and then reported "valid configuration" would hide the only thing it was asked to
+// check.
 func loadPreferringKey(path string, fl flags) (config.Config, error) {
 	cfg, err := config.Load(path)
-	if err != nil && (fl.validateConfig || fl.isolation) && strings.Contains(err.Error(), "LLM key is missing") {
+	if err != nil && diagnosticNeedsNoKey(fl) && strings.Contains(err.Error(), "LLM key is missing") {
 		return config.LoadWithoutKey(path)
 	}
 	return cfg, err
+}
+
+// diagnosticNeedsNoKey reports whether this invocation can be served without an LLM key.
+func diagnosticNeedsNoKey(fl flags) bool {
+	if fl.validateConfig || fl.isolation {
+		return true
+	}
+	// A curator command, unless it is the consolidation pass.
+	return fl.curatorAction != "" && !fl.curatorConsolidate
 }
 
 // needsOnboarding reports whether the invocation should trigger the first-run
