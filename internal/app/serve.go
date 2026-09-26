@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/madkoding/motita/internal/config"
+	"github.com/madkoding/motita/internal/curator"
 	"github.com/madkoding/motita/internal/gateway"
 	"github.com/madkoding/motita/internal/llm"
 	"github.com/madkoding/motita/internal/logx"
@@ -120,6 +121,12 @@ func (op Options) startGateway(fl flags, cfg config.Config, engine *llm.Client, 
 	store := procedures.Open(cfg, log)
 	runner.UseStore(store)
 
+	// The maintenance pass this process can trigger from a front end. It is built even
+	// when the periodic pass is DISABLED: `POST /v1/curator/run` is a person asking for
+	// a pass now, and somebody who turned the schedule off has not asked for the command
+	// to disappear.
+	cur := curator.New(cfg.Curator, store, engine, log, buildSkillRunner)
+
 	// NewService is what lets a client open a conversation of its own. It is wired in BOTH modes,
 	// because the interface's gateway IS the gateway -serve starts: the difference between them is
 	// what they DRAW, not who may talk to them.
@@ -175,6 +182,11 @@ func (op Options) startGateway(fl flags, cfg config.Config, engine *llm.Client, 
 		ScheduleTick:     cfg.Schedule.Tick,
 		// The workspace under which project folders are created.
 		WorkspaceDir: cfg.Agent.WorkspaceDir,
+		// The library and the maintenance pass, as the gateway sees them. Both are
+		// PROCESS-WIDE: the skill endpoints answer about the one store above, and the
+		// pass is the same object the periodic curator would use.
+		Skills:  skillAdapter{runner: runner},
+		Curator: curatorAdapter{c: cur},
 	}, cfg)
 	if err != nil {
 		return nil, err
