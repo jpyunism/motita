@@ -133,6 +133,23 @@ interface ScheduledTask {
   next_run: string
 }
 
+// SkillInfo is one skill as /v1/skills publishes it: the index fields plus the lifecycle
+// telemetry the curator keeps about it. There is no body here on purpose — the index stays
+// cheap to fetch, and the body arrives when the user opens one document.
+interface SkillInfo {
+  name: string
+  title: string
+  summary: string
+  path: string
+  created_by?: 'agent' | 'foreground'
+  state?: 'active' | 'stale' | 'archived'
+  pinned?: boolean
+  use_count: number
+  view_count: number
+  patch_count: number
+  last_used_at?: string
+}
+
 const STORAGE_KEY = 'motita:last-session'
 const SIDEBAR_KEY = 'motita:sidebar-open'
 const PROJECT_COLLAPSE_KEY = 'motita:collapsed-projects'
@@ -389,6 +406,15 @@ export default function App() {
   const [showSkillLibrary, setShowSkillLibrary] = useState(false)
   const [showScheduledTasks, setShowScheduledTasks] = useState(false)
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([])
+  // The library browser's state. The list is fetched when the modal OPENS and not on every
+  // render: refetching forty documents while the user types in the filter would spend the
+  // network on a filter that runs locally.
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [archivedSkills, setArchivedSkills] = useState<string[]>([])
+  const [skillQuery, setSkillQuery] = useState('')
+  const [skillOpen, setSkillOpen] = useState<SkillInfo | null>(null)
+  const [skillBody, setSkillBody] = useState('')
+  const [skillsBusy, setSkillsBusy] = useState(false)
   const [scheduledBusy, setScheduledBusy] = useState(false)
   // nowMs drives the countdown painted inside each task card. It ticks ONLY
   // while the panel is open: a timer that runs (and re-renders the whole app)
@@ -688,6 +714,85 @@ export default function App() {
       return []
     }
   }, [])
+
+  // fetchSkills loads the index and the archive together: they are two halves of one answer
+  // to "what is in the library", and a browser that showed one without the other would hide
+  // the very skills a user opens it to recover.
+  const fetchSkills = useCallback(async () => {
+    setSkillsBusy(true)
+    try {
+      const [res, arch] = await Promise.all([api('/v1/skills'), api('/v1/skills/archived')])
+      if (!res.ok) {
+        setState('could not load the skill library', true)
+        setSkillsBusy(false)
+        return
+      }
+      const data = await res.json()
+      setSkills(data.skills || [])
+      if (arch.ok) {
+        const a = await arch.json()
+        setArchivedSkills(a.skills || [])
+      }
+    } catch {
+      setState('could not load the skill library', true)
+    }
+    setSkillsBusy(false)
+  }, [])
+
+  // openSkill fetches one document's body. The index deliberately does not carry it.
+  const openSkill = useCallback(async (skill: SkillInfo) => {
+    try {
+      const res = await api('/v1/skills/' + encodeURIComponent(skill.name))
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setState(err.error || 'could not open the skill', true)
+        return
+      }
+      const data = await res.json()
+      setSkillBody(data.body || '')
+      setSkillOpen(skill)
+    } catch {
+      setState('could not open the skill', true)
+    }
+  }, [])
+
+  // pinSkill changes the exemption. The row is patched locally rather than refetched: the
+  // answer is one boolean and the list is already on screen.
+  const pinSkill = useCallback(async (name: string, pinned: boolean) => {
+    try {
+      const res = await api('/v1/skills/' + encodeURIComponent(name) + '/pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned })
+      })
+      if (!res.ok) {
+        setState('could not change the pin', true)
+        return
+      }
+      setSkills(prev => prev.map(s => (s.name === name ? { ...s, pinned } : s)))
+      // The open document's own copy has to follow, or the button would flip the pin and
+      // keep painting the state it had when the document was opened.
+      setSkillOpen(prev => (prev && prev.name === name ? { ...prev, pinned } : prev))
+    } catch {
+      setState('could not change the pin', true)
+    }
+  }, [])
+
+  // restoreSkill brings an archived document back, and then RELOADS both lists: what moved
+  // is a file, and the browser must not keep a guess about a directory it cannot see.
+  const restoreSkill = useCallback(async (name: string) => {
+    try {
+      const res = await api('/v1/skills/' + encodeURIComponent(name) + '/restore', { method: 'POST' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setState(err.error || 'could not restore the skill', true)
+        return
+      }
+      await fetchSkills()
+    } catch {
+      setState('could not restore the skill', true)
+    }
+  }, [fetchSkills])
 
   // createProject sends a new project to the gateway. When a git URL is set,
   // the gateway clones the repo and returns the clone log, which we show in
@@ -1560,6 +1665,27 @@ export default function App() {
       document.removeEventListener('keydown', onKey)
     }
   }, [rowMenu, closeRowMenu])
+
+  // The library is fetched when the modal OPENS, and the draft state is reset with it so a
+  // reopened modal never shows the previous document or the previous filter.
+  useEffect(() => {
+    if (!showSkillLibrary) return
+    setSkillQuery('')
+    setSkillOpen(null)
+    setSkillBody('')
+    fetchSkills()
+  }, [showSkillLibrary, fetchSkills])
+
+  // filteredSkills is what the list draws: the query filters by name, title and summary, in
+  // memory, over the index already fetched. It is computed here and not in the JSX because
+  // nothing in a render should be doing work the reader has to trace.
+  const skillQueryNorm = skillQuery.trim().toLowerCase()
+  const filteredSkills = skillQueryNorm === ''
+    ? skills
+    : skills.filter(s =>
+        s.name.toLowerCase().includes(skillQueryNorm) ||
+        s.title.toLowerCase().includes(skillQueryNorm) ||
+        s.summary.toLowerCase().includes(skillQueryNorm))
 
   // Copy button handler: delegate clicks from copy-btn and copy-msg-btn.
   useEffect(() => {
@@ -2986,14 +3112,23 @@ export default function App() {
           onClick={() => setShowSkillLibrary(false)}
         >
           <div
-            class="frosted rounded-2xl border border-white/10 w-full max-w-md p-5 shadow-2xl"
+            class="frosted rounded-2xl border border-white/10 w-full max-w-2xl max-h-[80vh] overflow-y-auto p-5 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div class="flex items-center gap-2 mb-4">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent">
                 <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
               </svg>
-              <h2 class="text-base font-semibold">Skill library</h2>
+              <h2 class="text-base font-semibold">{skillOpen ? (skillOpen.title || skillOpen.name) : 'Skill library'}</h2>
+              {skillOpen && (
+                <button
+                  class="ml-1 px-2.5 py-1 rounded-lg border border-white/10 text-xs text-[#9a9aaa] hover:text-[#e8e8ea] active:scale-95 transition-transform"
+                  onClick={() => pinSkill(skillOpen.name, !skillOpen.pinned)}
+                  title={skillOpen.pinned ? 'The curator will leave this alone' : 'Exempt this from every automatic transition'}
+                >
+                  {skillOpen.pinned ? 'Unpin' : 'Pin'}
+                </button>
+              )}
               <button
                 class="ml-auto p-1.5 rounded-lg hover:bg-white/5"
                 onClick={() => setShowSkillLibrary(false)}
@@ -3004,15 +3139,105 @@ export default function App() {
                 </svg>
               </button>
             </div>
-            <p class="text-sm text-[#9a9aaa]">The skill library browser is not yet available.</p>
-            <div class="flex gap-2 mt-5">
-              <button
-                class="flex-1 min-h-[44px] px-5 rounded-xl border border-white/10 text-[#e8e8ea] active:scale-95 transition-transform"
-                onClick={() => setShowSkillLibrary(false)}
-              >
-                Close
-              </button>
-            </div>
+
+            {skillOpen ? (
+              <div>
+                <div class="flex items-center gap-2 mb-3 text-xs text-[#6a6a7a]">
+                  <span class="font-mono">{skillOpen.name}</span>
+                  {skillOpen.created_by === 'agent' && <span class="skill-tag">agent</span>}
+                  {skillOpen.state === 'stale' && <span class="skill-tag skill-tag-warn">stale</span>}
+                  {skillOpen.pinned && <span class="skill-tag skill-tag-accent">pinned</span>}
+                  <span>used {skillOpen.use_count}×</span>
+                </div>
+                <div class="skill-body rounded-xl border border-white/5 p-3">
+                  <Markdown content={skillBody} />
+                </div>
+                <div class="flex gap-2 mt-4">
+                  <button
+                    class="flex-1 min-h-[44px] px-5 rounded-xl border border-white/10 text-[#e8e8ea] active:scale-95 transition-transform"
+                    onClick={() => setSkillOpen(null)}
+                  >
+                    Back to the list
+                  </button>
+                  <button
+                    class="min-h-[44px] px-5 rounded-xl border border-white/10 text-[#e8e8ea] active:scale-95 transition-transform"
+                    onClick={() => setShowSkillLibrary(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <input
+                  type="text"
+                  value={skillQuery}
+                  onInput={(e) => setSkillQuery((e.target as HTMLInputElement).value)}
+                  placeholder="Filter by name, title or what it is for"
+                  class="w-full mb-3 px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-sm text-[#e8e8ea] placeholder:text-[#5a5a68] focus:outline-none focus:border-accent/50"
+                />
+
+                {skillsBusy ? (
+                  <p class="text-sm text-[#9a9aaa] py-8 text-center">Loading the library…</p>
+                ) : filteredSkills.length === 0 ? (
+                  <p class="text-sm text-[#9a9aaa] py-8 text-center">
+                    {skillQueryNorm !== ''
+                      ? `Nothing matches “${skillQuery.trim()}”.`
+                      : 'No skills yet. The agent writes one when it works something out.'}
+                  </p>
+                ) : (
+                  <ul class="space-y-1.5">
+                    {filteredSkills.map((s) => (
+                      <li key={s.name}>
+                        <button
+                          class="w-full text-left px-3 py-2.5 rounded-xl border border-white/5 hover:border-white/15 hover:bg-white/[0.03] active:scale-[0.99] transition-all"
+                          onClick={() => openSkill(s)}
+                        >
+                          <div class="flex items-center gap-2">
+                            <span class="text-sm font-medium text-[#e8e8ea] truncate">{s.title || s.name}</span>
+                            {s.created_by === 'agent' && <span class="skill-tag">agent</span>}
+                            {s.state === 'stale' && <span class="skill-tag skill-tag-warn">stale</span>}
+                            {s.pinned && <span class="skill-tag skill-tag-accent">pinned</span>}
+                            <span class="ml-auto text-xs text-[#6a6a7a] shrink-0">used {s.use_count}×</span>
+                          </div>
+                          {s.summary && (
+                            <p class="text-xs text-[#9a9aaa] mt-0.5 truncate">{s.summary}</p>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {archivedSkills.length > 0 && (
+                  <div class="mt-5 pt-4 border-t border-white/5">
+                    <h3 class="text-xs uppercase tracking-wide text-[#6a6a7a] mb-2">Archived</h3>
+                    <ul class="space-y-1.5">
+                      {archivedSkills.map((name) => (
+                        <li key={name} class="flex items-center gap-2 px-3 py-2 rounded-xl border border-white/5">
+                          <span class="text-sm text-[#9a9aaa] truncate font-mono">{name}</span>
+                          <button
+                            class="ml-auto px-2.5 py-1 rounded-lg border border-white/10 text-xs text-[#e8e8ea] hover:border-accent/40 active:scale-95 transition-transform shrink-0"
+                            onClick={() => restoreSkill(name)}
+                          >
+                            Restore
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div class="flex gap-2 mt-5">
+                  <button
+                    class="flex-1 min-h-[44px] px-5 rounded-xl border border-white/10 text-[#e8e8ea] active:scale-95 transition-transform"
+                    onClick={() => setShowSkillLibrary(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

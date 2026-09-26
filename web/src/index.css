@@ -259,6 +259,47 @@ body {
   white-space: nowrap;
 }
 
+/* The skill library's badges. Same shape as .task-tag and deliberately a
+ * separate class: a badge that is neutral (which provenance wrote this) must
+ * not be repainted whenever somebody restyles the scheduled-task cadence. */
+.skill-tag {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #9a9aaa;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* stale: the curator has marked it unused. It is a warning, not an error: the
+ * document is still there and still readable, so it is amber. */
+.skill-tag-warn {
+  background: rgba(240, 160, 64, 0.12);
+  border-color: rgba(240, 160, 64, 0.28);
+  color: #f0a040;
+}
+
+/* pinned: the user's own decision, so it carries the accent, and it is the one
+ * badge that is a promise rather than a description. */
+.skill-tag-accent {
+  background: rgba(76, 194, 255, 0.12);
+  border-color: rgba(76, 194, 255, 0.28);
+  color: #8fd4ff;
+}
+
+/* The document's body. The markdown rules are written for the transcript, which
+ * is set solid; a card needs its own measure, so the block is bounded and the
+ * overflow scrolls rather than pushing the modal's buttons off-screen. */
+.skill-body {
+  max-height: 52vh;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.22);
+}
+
 /* The countdown: the figure a person opens this panel to read, so it is the
  * accent colour and monospaced (the digits must not reflow as they tick). */
 .task-countdown {
