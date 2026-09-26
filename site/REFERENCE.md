@@ -987,6 +987,22 @@ is filesystem work, and requiring a model to sort files is requiring a model to 
 something that does not use one. `--consolidate` is the exception, deliberately: that
 IS the path that talks to a model, so it is the one that needs the key.
 
+**The curator never deletes.** A document that ages out is *moved* to `.archive/`
+inside the skills directory, and `POST /v1/skills/{name}/restore` (or
+`motita curator restore`) puts it back. There is no automatic transition that ends in
+a missing file, because the pass runs without anybody watching: a maintenance job that
+can discard work is a maintenance job nobody leaves switched on.
+
+**Only agent-written documents are aged.** The pass reads `created_by` off the ledger
+and skips everything else: a document you wrote by hand is yours, and the machine does
+not get to call it stale. Setting `pinned` takes a document out of the pass entirely.
+
+The status codes are the ordinary ones, and they are worth naming because a client
+has to tell them apart: `201` when `POST /v1/skills` creates, `204` from `pin` and
+`restore`, `404` for a name that is not there, and `501` from every endpoint when the
+process was started without a library at all — which is a different answer from "the
+library is empty", and the reason a front end can say which one it is looking at.
+
 ### What runs silently, and why that is a design decision
 
 The confirmation layer is the part operators actually feel, because it is the part

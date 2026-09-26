@@ -332,6 +332,11 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 | `GET` `POST /v1/schedules` | list the tasks that fire on their own, or add one |
 | `PATCH` `DELETE /v1/schedules/{id}` | pause, retarget or remove one |
 | `POST /v1/schedules/{id}/run` | run it now, without moving its cadence |
+| `GET` `POST /v1/skills` | the procedure library's index, or write one |
+| `GET /v1/skills/{name}` | one document, body included |
+| `GET /v1/skills/archived` | what the curator moved aside |
+| `POST /v1/skills/{name}/pin` `/restore` | exempt it from curation, or bring it back |
+| `GET /v1/curator` `POST /v1/curator/run` | the maintenance pass: report it, or run one |
 
 The default conversation belongs to the process that started the gateway: closing it
 is refused, because that process would be left talking to a conversation that no
