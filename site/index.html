@@ -147,13 +147,27 @@
     position: fixed;
     inset: 0;
     z-index: -1;
-    background-image: url(chat-bg.webp);
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
-    /* The scene is bright, and the panels are only 78% opaque. This scrim
-       is what keeps body text legible over the lit window on the left. */
-    filter: brightness(0.42) saturate(0.9);
+    /* The scrim is layered ON TOP of the illustration rather than only dimming
+       it with `filter`. Both are needed and they do different things: the
+       gradient compresses the whole image uniformly, so the lit window on the
+       left stops being a light source under the text, while `brightness` keeps
+       the picture's own colour.
+
+       The numbers come from measuring the rendered pixels, not from taste. With
+       `brightness(0.42)` alone the brightest pixel under the hero was sRGB ~102,
+       and the muted text (#9a9aaa) over it measured 2.05-3.13:1 against a 4.5:1
+       requirement - a page that looks atmospheric in a screenshot and is
+       genuinely hard to read on a bright panel. The first ancestor-walking
+       contrast check cannot catch this: it stops at body's #0a0a0f, a colour the
+       illustration paints over, and reports a comfortable pass on pixels nobody
+       sees. scripts/measure-site-contrast.js re-measures it against the image. */
+    background-image:
+      linear-gradient(rgba(10, 10, 15, 0.62), rgba(10, 10, 15, 0.62)),
+      url(chat-bg.webp);
+    background-size: cover, cover;
+    background-position: center, center;
+    background-repeat: no-repeat, no-repeat;
+    filter: brightness(0.5) saturate(0.9);
   }
   @media (prefers-reduced-data: reduce) {
     body::before { background-image: none; }

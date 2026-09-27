@@ -460,6 +460,25 @@ else
   bad "$site_out"
 fi
 
+step "8f. the site's text is legible over its own background image"
+# A different question from every check above, and the one they all miss: an
+# ancestor-walking contrast check stops at body's #0a0a0f, a colour the fixed
+# illustration paints over, so it reports a comfortable pass against pixels
+# nobody sees. Measured: the muted text read fine by that route and 2.05:1
+# against the real background.
+#
+# Exit 2 is "skipped" (no browser, no probe venv), the same convention
+# verify-spinner.sh uses - a contributor without a browser gets an honest skip
+# instead of a red gate about a feature that is fine.
+set +e
+contrast_out="$(./scripts/verify-site-contrast.sh 2>&1)"
+contrast_rc=$?
+case "$contrast_rc" in
+  0) ok "$(printf '%s\n' "$contrast_out" | grep 'worst ratio' || echo 'measured')" ;;
+  2) printf '  skip  %s\n' "$(printf '%s\n' "$contrast_out" | grep '^SKIP' || echo 'skipped: no browser or probe venv')" ;;
+  *) bad "$(printf '%s\n' "$contrast_out" | grep -E 'FAIL|VERDICT' | head -5)" ;;
+esac
+
 printf '\n========================================\n'
 if [ "$failures" -eq 0 ]; then
   echo "VERIFICATION PASSED: the repository is clean, tested and functional."
