@@ -111,7 +111,7 @@ what gets verified is the artifact you download, not a rebuild of it.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/madkoding/motita/main/scripts/install.sh | sh
+curl -fsSL https://madkoding.github.io/motita/install.sh | sh
 ```
 
 ```mermaid
@@ -674,5 +674,5 @@ was designed against the standard library alone.
 **MIT licensed.** Take it, ship it, run it on hardware everyone else wrote off.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/madkoding/motita/main/scripts/install.sh | sh
+curl -fsSL https://madkoding.github.io/motita/install.sh | sh
 ```

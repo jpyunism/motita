@@ -7,6 +7,11 @@ name: pages
 # and it deliberately does NOT run the test suite. ci.yml already gates every
 # push to main, and a documentation site should not be able to fail a build for a
 # reason that has nothing to do with the code.
+#
+# It does ONE write to the directory before uploading it: the version stamp.
+# A page that advertises the version has to get it from the release rather than
+# from a sentence somebody remembered to update, and a hand-written number in a
+# static file is wrong the day after the next tag.
 on:
   push:
     branches: [main]
@@ -14,6 +19,18 @@ on:
       - site/**
       - docs/**
       - .github/workflows/pages.yml
+    # A tag is what "the version" means, and a release does not touch site/ — so
+    # without this trigger the page would keep advertising the previous tag until
+    # somebody happened to edit a page. It fires the deploy the moment a release
+    # is published.
+    #
+    # NESTED under push, not a sibling of it. `on.tags` is not a trigger GitHub
+    # knows, and an unrecognised key there does not warn - the whole workflow
+    # fails instantly with "workflow file issue", no job, no log. That is exactly
+    # how this was first written, and the pages run on main was green right up
+    # until the branch that carried it.
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -36,27 +53,64 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The version comes from the tag HISTORY, so the tags have to be here.
+          # A shallow clone has none, and `git describe` would answer with a bare
+          # commit hash - a "version" no release page has ever shown.
+          fetch-depth: 0
 
-      - name: Verify the site is self-contained
-        # Every local href/src must resolve inside site/. This catches the one
-        # mistake that is invisible locally and fatal in production: a path that
-        # works because docs/ happens to sit next to the file and does not exist
-        # once only site/ is uploaded.
+      - name: Stamp the version the page advertises
+        # Ask git for the newest reachable v* tag. On a tag push that IS the tag
+        # being released; on a push to main it is the last one published, which is
+        # the honest answer - main may be ahead of it, and claiming otherwise
+        # would advertise a release that does not exist yet.
+        #
+        # The marker in site/index.html is replaced in place and the job FAILS if
+        # it is absent: a page whose version cannot be stamped would otherwise be
+        # published still showing the v0.0.0 fallback, and nothing on the site
+        # would say so.
         run: |
           set -eu
-          cd site
-          missing=0
-          for f in $(grep -rhoE '(href|src)="[^"]+"' . \
-                     | sed -E 's/.*="([^"]+)"/\1/' \
-                     | grep -vE '^(https?:|mailto:|#|data:)' \
-                     | sort -u); do
-            if [ ! -e "$f" ]; then
-              echo "::error file=site/index.html::dead reference: $f"
-              missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
-          echo "every local reference resolves"
+          version="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -z "$version" ]; then
+            echo "::error::no v* tag is reachable, so there is no version to publish"
+            exit 1
+          fi
+          echo "stamping the site with $version"
+          if ! grep -q 'data-motita-version' site/index.html; then
+            echo "::error file=site/index.html::the version marker is gone; the page would publish an unstamped version"
+            exit 1
+          fi
+          version="$version" python3 - <<'PY'
+          import os, pathlib, re
+          v = os.environ["version"]
+          p = pathlib.Path("site/index.html")
+          src = p.read_text(encoding="utf-8")
+          # Inside the marker element only, so a mention of another version
+          # elsewhere in the prose is not rewritten by accident.
+          new, n = re.subn(
+              r'(<span data-motita-version>)[^<]*(</span>)',
+              lambda m: m.group(1) + v + m.group(2),
+              src,
+          )
+          if n != 1:
+              raise SystemExit(f"expected exactly one version marker, found {n}")
+          p.write_text(new, encoding="utf-8")
+          print("stamped:", v)
+          PY
+          grep -o 'data-motita-version>[^<]*' site/index.html
+
+      - name: Verify the site is self-contained
+        # ONE implementation, two callers: scripts/verify-site.sh is what runs here
+        # and what `verify.sh` runs locally (step 8e). It checks every local
+        # href/src and CSS url() against site/, and that the installer the page
+        # advertises is actually shipped and byte-identical to scripts/install.sh.
+        #
+        # Why a gate at all: site/ is uploaded ON ITS OWN, so a reference that
+        # resolves because docs/ sits beside the page is dead in production, and
+        # a missing font does not 404 - it renders every heading in the fallback
+        # face while every status code stays 200.
+        run: ./scripts/verify-site.sh site
 
       - uses: actions/configure-pages@v6
 
