@@ -61,6 +61,24 @@ else
   echo "$output" | tail -30 | sed 's/^/    /'
 fi
 
+step "4c. the workflow files are valid"
+# A malformed workflow does not fail a step: it fails the WHOLE run in zero
+# seconds with "workflow file issue", no job and no log, and nothing in the file
+# pointing at the line. Measured here - a `tags:` trigger was written as a
+# sibling of `push:` instead of nested inside it, and the pages workflow went
+# from green on main to failing every run on the branch that carried it. There
+# was no log to read, and `gh workflow view` listed it as healthy.
+#
+# Exit 2 is "skipped" (PyYAML absent), the convention verify-spinner.sh uses for
+# a missing tool.
+workflow_out="$(./scripts/check-workflows.sh 2>&1)"
+workflow_rc=$?
+case "$workflow_rc" in
+  0) ok "$(printf '%s\n' "$workflow_out" | tr '\n' ' ' | sed 's/  ok  */ /g; s/ *$//')" ;;
+  2) printf '  skip  %s\n' "$(printf '%s\n' "$workflow_out" | grep '^SKIP' || echo 'skipped: PyYAML unavailable')" ;;
+  *) bad "$(printf '%s\n' "$workflow_out" | grep '^FAIL' | head -5)" ;;
+esac
+
 step "4b. staticcheck (the CI pins v0.6.1)"
 # The CI has run this since it was added there and this script did not, which is how a
 # branch passed here and failed there on an SA4006 the same commit. It is the step that
