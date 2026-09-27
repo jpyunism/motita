@@ -8,7 +8,7 @@
       "url": "https://github.com/madkoding/motita",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7c7e4e703d2aefdc83272928a0b6210e5eda30a1"
+      "revision": "633ef534fa1143b9da8807abc66d375baa5db609"
     },
     "views": [
       {
@@ -369,12 +369,32 @@
           "label": "embedded"
         }
       ]
+    },
+    {
+      "id": "curator",
+      "type": "backend",
+      "label": "Curator",
+      "sublabel": "internal/curator",
+      "pos": [
+        1120,
+        525
+      ],
+      "size": [
+        120,
+        50
+      ],
+      "sources": [
+        {
+          "path": "internal/curator/curator.go",
+          "label": "age + archive skill files"
+        }
+      ]
     }
   ],
   "boundaries": [
     {
       "kind": "region",
-      "label": "Single binary \u2014 cmd/agent",
+      "label": "Single binary — cmd/agent",
       "wraps": [
         "tui",
         "webui",
@@ -390,7 +410,8 @@
         "reward",
         "config",
         "session",
-        "skills"
+        "skills",
+        "curator"
       ]
     }
   ],
@@ -523,6 +544,13 @@
       "to": "skills",
       "label": "built-ins",
       "variant": "dashed"
+    },
+    {
+      "id": "curator-to-skills",
+      "from": "curator",
+      "to": "skills",
+      "label": "archive",
+      "variant": "dashed"
     }
   ],
   "cards": [
@@ -550,7 +578,7 @@
       "items": [
         "Policy gates every action: allow, ask, or deny",
         "Sandbox isolates execution with rlimits and ephemeral dirs",
-        "Anchor validates exit codes and invariants \u2014 nothing runs unjudged",
+        "Anchor validates exit codes and invariants — nothing runs unjudged",
         "Net rules enforce origin policy on gateway requests"
       ]
     }

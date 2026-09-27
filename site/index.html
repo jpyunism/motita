@@ -6,36 +6,109 @@
 <title>Motita — the AI agent that has to prove it finished</title>
 <meta name="description" content="A three-layer AI agent that runs a real check to prove a task is done. One static binary, zero dependencies, runs on a 2008 netbook.">
 <meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><g stroke='%2322C55E' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M8 24 Q4 18 6 12 L4 6 L12 11 Q16 8 20 11 L28 6 L26 12 Q28 18 24 24 Z'/><circle cx='13' cy='16' r='1.5' fill='%2322C55E' stroke='none'/><circle cx='21' cy='16' r='1.5' fill='%2322C55E' stroke='none'/><path d='M16 20 L18 22 L20 20'/><path d='M24 24 Q28 22 30 18'/></g></svg>">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><g stroke='%234cc2ff' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M8 24 Q4 18 6 12 L4 6 L12 11 Q16 8 20 11 L28 6 L26 12 Q28 18 24 24 Z'/><circle cx='13' cy='16' r='1.5' fill='%234cc2ff' stroke='none'/><circle cx='21' cy='16' r='1.5' fill='%234cc2ff' stroke='none'/><path d='M16 20 L18 22 L20 20'/><path d='M24 24 Q28 22 30 18'/></g></svg>">
+<!-- Preload the two faces the first paint needs, so the headline is not
+     re-laid-out after the illustration has already shown. -->
+<link rel="preload" href="fonts/Sansation-Bold.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/Sansation-Regular.woff2" as="font" type="font/woff2" crossorigin>
 <style>
-  /* Design system: Dark Mode (OLED) + JetBrains Mono / IBM Plex Sans.
-     Tokens first, so every surface reads from one place. */
+  /* ─── The product's own fonts, self-hosted ──────────────────────
+   * These are the SAME files the browser interface embeds (web/public/),
+   * copied verbatim, so page and product are one artifact instead of two
+   * that merely resemble each other. Self-hosted and not from a CDN: the
+   * binary ships with zero external dependencies, and a page that pulled
+   * its type from fonts.googleapis.com would be a claim it cannot keep.
+   *
+   * Weights are the ones the family actually HAS: Sansation is 300/400/700
+   * (+ italics). Writing 500 or 600 here would be a request the browser
+   * fakes by synthesis, which is a different letterform, not a heavier one.
+   *
+   * The icon face (JetBrainsMonoNerdFont-Icons.woff2, 932 KB of PUA glyphs)
+   * is deliberately NOT copied: no page here prints a Nerd Font icon, and
+   * fetching 932 KB to never draw a glyph is the waste the app's own
+   * unicode-range exists to prevent. */
+  @font-face {
+    font-family: 'Sansation'; font-weight: 300; font-style: normal;
+    src: url(fonts/Sansation-Light.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'Sansation'; font-weight: 300; font-style: italic;
+    src: url(fonts/Sansation-LightItalic.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'Sansation'; font-weight: 400; font-style: normal;
+    src: url(fonts/Sansation-Regular.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'Sansation'; font-weight: 400; font-style: italic;
+    src: url(fonts/Sansation-Italic.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'Sansation'; font-weight: 700; font-style: normal;
+    src: url(fonts/Sansation-Bold.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'Sansation'; font-weight: 700; font-style: italic;
+    src: url(fonts/Sansation-BoldItalic.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'JetBrainsMonoNF'; font-weight: 400; font-style: normal;
+    src: url(fonts/JetBrainsMonoNerdFont-Regular.woff2) format('woff2'); font-display: swap;
+  }
+  @font-face {
+    font-family: 'JetBrainsMonoNF'; font-weight: 700; font-style: normal;
+    src: url(fonts/JetBrainsMonoNerdFont-Bold.woff2) format('woff2'); font-display: swap;
+  }
+
+  /* ─── Design system: motita's own ────────────────────────────────
+   * Every token below is read off the running product, not invented:
+   *   accent          #4cc2ff  — the app's --accent (tailwind.config.js)
+   *   base            #0a0a0f  — .app-bg's background-color
+   *   surface         rgba(10,10,16,.78) — .frosted, over the illustration
+   *   fg              #e8e8ea  — the app's primary text
+   *   muted-fg        #9a9aaa  — the app's secondary text
+   *   faint           #6a6a7a  — the app's labels and section headings
+   *   warning         #f0a040  — the app's warning (App.tsx)
+   *   danger          #ff6b6b  — the app's danger (tailwind.config.js)
+   * The page kept a green (#22C55E) that appears nowhere in the product,
+   * which meant the site and the thing it describes were two different
+   * designs. Tokens first, so every surface reads from one place. */
   :root {
     color-scheme: dark;
-    --bg: #0F172A;
-    --bg-deep: #080D18;
-    --card: #1B2336;
-    --muted: #272F42;
-    --fg: #F8FAFC;
-    --muted-fg: #94A3B8;
-    --border: #2E3A52;
-    --border-strong: #475569;
-    --accent: #22C55E;
-    --accent-dim: #16A34A;
-    --on-accent: #08130B;
-    --amber: #E3B341;
-    --rose: #F87171;
-    --cyan: #56D4DD;
-    --violet: #A78BFA;
-    --ring: #F8FAFC;
-    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-    --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    --radius: 10px;
+    --bg: #0a0a0f;
+    --bg-deep: rgba(0, 0, 0, 0.38);
+    --card: rgba(10, 10, 16, 0.78);
+    --card-solid: #16161e;
+    --muted: rgba(255, 255, 255, 0.06);
+    --fg: #e8e8ea;
+    --muted-fg: #9a9aaa;
+    --faint: #6a6a7a;
+    --border: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --accent: #4cc2ff;
+    --accent-dim: #3aa8e0;
+    --accent-glow: rgba(76, 194, 255, 0.2);
+    --on-accent: #0a0a0f;
+    --amber: #f0a040;
+    --rose: #ff6b6b;
+    --cyan: #6dd5ff;
+    --violet: #a0a0f0;
+    --ring: #4cc2ff;
+    --mono: 'JetBrainsMonoNF', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: 'Sansation', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --radius: 12px;
+    --radius-lg: 16px;
+    --blur: blur(20px) saturate(1.3);
     --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
     --space-5: 24px; --space-6: 32px; --space-7: 48px; --space-8: 64px; --space-9: 96px;
+  }
+
+  /* The frosted panel: the app's .frosted, and the reason the illustration
+     can sit behind the whole page instead of only at the top. */
+  .frosted {
+    background: var(--card);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
 
   *, *::before, *::after { box-sizing: border-box; }
@@ -46,16 +119,22 @@
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   }
 
-  /* Holographic doodle cat background — same tile as the web UI, tiled across
-     the page. The cats are drawn in accent green at low opacity so they read
-     as texture, not noise. A holographic iridescent overlay sits on top via
-     body::after, producing the Pokemon-card shine that shifts with scroll. */
+  /* ─── The illustration, exactly as the app ships it ──────────────
+   * site/chat-bg.webp is a byte copy of web/public/chat-bg.webp, the same
+   * picture the browser interface paints behind its own panels. Fixed and
+   * cover, so it reads as one continuous scene under a scrolling page
+   * instead of a repeating texture.
+   *
+   * The dark base colour is painted UNDER the image and is what the
+   * frosted panels are measured against: on a phone the illustration is
+   * narrow, and an unloaded image would otherwise leave text on white.
+   *
+   * It is decorative and it is NOT the content: `prefers-reduced-data`
+   * drops it, and so does a reader who cannot load it. Everything the
+   * page claims stands on its own without it. */
   body {
     margin: 0;
-    background: var(--bg);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'%3E%3Cg transform='translate(20,20) scale(0.7)' stroke='%2322C55E' fill='none' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' opacity='0.15'%3E%3Cpath d='M5 30 Q0 20 3 10 L0 3 L12 10 Q20 6 28 10 L40 3 L37 10 Q42 20 37 30 Z'/%3E%3Ccircle cx='13' cy='16' r='1.5'/%3E%3Ccircle cx='21' cy='16' r='1.5'/%3E%3Cpath d='M16 20 L18 22 L20 20'/%3E%3C/g%3E%3Cg transform='translate(120,60) scale(0.5)' stroke='%2322C55E' fill='none' stroke-width='1.5' stroke-linecap='round' opacity='0.12'%3E%3Ccircle cx='20' cy='20' r='18'/%3E%3Cpath d='M15 20 Q15 16 20 16 Q25 16 25 20'/%3E%3Cpath d='M12 28 Q20 32 28 28'/%3E%3C/g%3E%3Cg transform='translate(60,130) scale(0.4)' stroke='%2322C55E' fill='none' stroke-width='2' stroke-linecap='round' opacity='0.10'%3E%3Ccircle cx='10' cy='10' r='3'/%3E%3Ccircle cx='4' cy='16' r='3'/%3E%3Ccircle cx='16' cy='16' r='3'/%3E%3Ccircle cx='10' cy='22' r='3'/%3E%3C/g%3E%3Cg transform='translate(150,140) scale(0.5)' stroke='%2322C55E' fill='none' stroke-width='1.5' stroke-linecap='round' opacity='0.12'%3E%3Cpath d='M5 25 Q5 10 20 10 Q35 10 35 25'/%3E%3Cpath d='M15 25 L15 15'/%3E%3Cpath d='M25 25 L25 15'/%3E%3Cpath d='M5 25 L35 25'/%3E%3C/g%3E%3Cg transform='translate(30,170) scale(0.35)' stroke='%2322C55E' fill='none' stroke-width='2' opacity='0.10'%3E%3Cpath d='M20 5 L22 15 L32 15 L24 22 L27 32 L20 26 L13 32 L16 22 L8 15 L18 15 Z'/%3E%3C/g%3E%3C/svg%3E");
-    background-repeat: repeat;
-    background-size: 200px 200px;
+    background-color: var(--bg);
     color: var(--fg);
     font-family: var(--sans);
     font-size: 16px;
@@ -63,26 +142,21 @@
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
-
-  /* Holographic iridescent overlay — the Pokemon-card shine. */
   body::before {
     content: "";
     position: fixed;
     inset: 0;
-    background: linear-gradient(120deg,
-      rgba(34,197,94,0.06) 0%,
-      rgba(167,139,250,0.05) 25%,
-      rgba(248,113,113,0.04) 50%,
-      rgba(86,212,221,0.05) 75%,
-      rgba(34,197,94,0.06) 100%);
-    background-size: 300% 300%;
-    pointer-events: none;
-    z-index: 0;
-    animation: holoShift 8s ease-in-out infinite;
+    z-index: -1;
+    background-image: url(chat-bg.webp);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    /* The scene is bright, and the panels are only 78% opaque. This scrim
+       is what keeps body text legible over the lit window on the left. */
+    filter: brightness(0.42) saturate(0.9);
   }
-  @keyframes holoShift {
-    0%, 100% { background-position: 0% 0%; }
-    50% { background-position: 100% 100%; }
+  @media (prefers-reduced-data: reduce) {
+    body::before { background-image: none; }
   }
 
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 var(--space-5); position: relative; z-index: 1; }
@@ -101,7 +175,7 @@
   code {
     background: var(--muted);
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 6px;
     padding: 1px 6px;
     font-size: .875em;
     color: var(--fg);
@@ -112,15 +186,18 @@
     position: absolute; left: -9999px; top: 0;
     background: var(--accent); color: var(--on-accent);
     padding: var(--space-3) var(--space-4); border-radius: 0 0 var(--radius) 0;
-    font-weight: 600; z-index: 100;
+    font-weight: 700; z-index: 100;
   }
   .skip:focus { left: 0; }
 
   /* ---------- header ---------- */
+  /* Same frosted panel the app's own header uses, so the illustration runs
+     the full height of the page and the bar reads as glass over it. */
   header {
     position: sticky; top: 0; z-index: 50;
-    background: rgba(15,23,42,.86);
-    backdrop-filter: blur(12px);
+    background: rgba(10, 10, 16, 0.82);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     border-bottom: 1px solid var(--border);
   }
   .bar { display: flex; align-items: center; gap: var(--space-5); height: 62px; }
@@ -131,24 +208,33 @@
   }
   .brand span, .brand svg { color: var(--accent); }
   nav { margin-left: auto; display: flex; align-items: center; gap: var(--space-5); }
-  nav a { color: var(--muted-fg); font-size: .9rem; font-weight: 500; white-space: nowrap; }
+  /* inline-flex + min-height, so the links keep the same visual line they had
+     while the tappable box reaches 44px. A text-only link measures ~23px tall,
+     and a short label like "Run it" only 36px wide - both are misses on a phone
+     and invisible in a screenshot. The horizontal padding is what carries the
+     short labels: it is 4px a side, so the row looks unchanged. */
+  nav a {
+    color: var(--muted-fg); font-size: .9rem; font-weight: 400; white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 44px; padding: 0 var(--space-1);
+  }
   nav a:hover { color: var(--fg); text-decoration: none; }
   .gh {
     display: inline-flex; align-items: center; gap: var(--space-2);
     border: 1px solid var(--border-strong); border-radius: 8px;
-    padding: 10px 14px; color: var(--fg); font-size: .875rem; font-weight: 600;
+    padding: 10px 14px; color: var(--fg); font-size: .875rem; font-weight: 700;
     font-family: var(--mono); min-height: 44px;
   }
-  .gh:hover { border-color: var(--accent); text-decoration: none; background: rgba(34,197,94,.08); }
+  .gh:hover { border-color: var(--accent); text-decoration: none; background: var(--accent-glow); }
   @media (max-width: 860px) { nav a:not(.gh) { display: none; } }
 
   /* ---------- hero ---------- */
   .hero { padding: var(--space-9) 0 var(--space-7); text-align: center; }
   .pill {
     display: inline-flex; align-items: center; gap: var(--space-2);
-    font-family: var(--mono); font-size: .78rem; font-weight: 500;
-    color: var(--accent); background: rgba(34,197,94,.09);
-    border: 1px solid rgba(34,197,94,.28); border-radius: 100px;
+    font-family: var(--mono); font-size: .78rem; font-weight: 400;
+    color: var(--accent); background: var(--accent-glow);
+    border: 1px solid rgba(76, 194, 255, 0.28); border-radius: 100px;
     padding: 6px 14px; margin-bottom: var(--space-5);
   }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
@@ -171,9 +257,11 @@
   .install { max-width: 960px; margin: 0 auto var(--space-5); }
   .cmd {
     display: flex; align-items: center; gap: var(--space-4);
-    background: var(--bg-deep); border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.42); border: 1px solid var(--border);
     border-radius: var(--radius); padding: var(--space-4) var(--space-5);
     font-family: var(--mono); font-size: .8rem; text-align: left;
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
   .cmd .prompt { color: var(--accent); user-select: none; flex: none; }
   .cmd code {
@@ -184,7 +272,7 @@
     flex: none; background: var(--muted); color: var(--fg);
     border: 1px solid var(--border-strong); border-radius: 7px;
     padding: 11px 14px; font-family: var(--mono); font-size: .78rem;
-    font-weight: 600; cursor: pointer; min-height: 44px;
+    font-weight: 700; cursor: pointer; min-height: 44px;
     transition: background .15s ease, border-color .15s ease;
   }
   .copy:hover { background: var(--border); border-color: var(--accent); }
@@ -206,7 +294,7 @@
   /* ---------- sections ---------- */
   section { padding: var(--space-9) 0; border-top: 1px solid var(--border); }
   .eyebrow {
-    font-family: var(--mono); font-size: .78rem; font-weight: 600;
+    font-family: var(--mono); font-size: .78rem; font-weight: 700;
     color: var(--accent); letter-spacing: .09em; text-transform: uppercase;
     margin: 0 0 var(--space-3);
   }
@@ -215,10 +303,12 @@
     font-weight: 700; letter-spacing: -.01em; line-height: 1.2;
     margin: 0 0 var(--space-4); max-width: 26ch;
   }
-  h3 { font-family: var(--mono); font-size: 1rem; font-weight: 600; margin: 0 0 var(--space-2); }
+  h3 { font-family: var(--mono); font-size: 1rem; font-weight: 700; margin: 0 0 var(--space-2); }
   .sub { color: var(--muted-fg); max-width: 68ch; margin: 0 0 var(--space-6); }
-  .sub strong { color: var(--fg); font-weight: 600; }
+  .sub strong { color: var(--fg); font-weight: 700; }
 
+  /* Cards are frosted panels now, not opaque blocks: the illustration
+     shows through every one of them the same way it does in the app. */
   .cards {
     display: grid; gap: var(--space-4);
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
@@ -226,6 +316,8 @@
   .card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius); padding: var(--space-5);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
   .card p { margin: 0; color: var(--muted-fg); font-size: .93rem; }
   .card .k {
@@ -251,6 +343,8 @@
     align-items: baseline; background: var(--card);
     border: 1px solid var(--border); border-left-width: 3px;
     border-radius: var(--radius); padding: var(--space-4) var(--space-5);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
   .v.allow { border-left-color: var(--accent); }
   .v.ask   { border-left-color: var(--amber); }
@@ -264,13 +358,15 @@
   @media (max-width: 560px) { .v { grid-template-columns: 1fr; gap: var(--space-2); } }
 
   /* ---------- stats ---------- */
+  /* The 1px gap is the border colour showing through, so the seams match
+     the panels. Each cell is frosted like every other surface. */
   .stats {
     display: grid; gap: 1px; background: var(--border);
     border: 1px solid var(--border); border-radius: var(--radius);
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
     overflow: hidden;
   }
-  .stat { background: var(--card); padding: var(--space-5); }
+  .stat { background: var(--card); padding: var(--space-5); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); }
   .stat .n {
     font-family: var(--mono); font-size: 1.6rem; font-weight: 700;
     color: var(--accent); line-height: 1.1; display: block;
@@ -281,9 +377,11 @@
   .diagram {
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--radius); overflow: hidden; margin-top: var(--space-6);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
   .diagram iframe {
-    width: 100%; height: 680px; border: 0; display: block; background: #0b1020;
+    width: 100%; height: 680px; border: 0; display: block; background: #0a0a0f;
   }
   .diagram .foot {
     display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
@@ -292,10 +390,15 @@
   }
 
   /* ---------- code block ---------- */
+  /* --bg-deep is a translucent black over the illustration rather than an
+     opaque navy: the page is one continuous scene, and a solid slab in the
+     middle of it reads as a hole. */
   pre {
     background: var(--bg-deep); border: 1px solid var(--border);
     border-radius: var(--radius); padding: var(--space-5);
     overflow-x: auto; font-size: .85rem; line-height: 1.65; margin: 0;
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
   pre .c { color: var(--muted-fg); }
   pre .g { color: var(--accent); }
@@ -342,7 +445,12 @@
 <main id="main">
 
   <div class="wrap hero">
-    <span class="pill"><span class="dot" aria-hidden="true"></span> v0.5.0 · MIT · zero dependencies</span>
+    <!-- The version is NOT written here by hand: the pages workflow replaces
+         the marker below with the tag being published, so this line cannot
+         drift from what was actually released. It is deliberately a v0.0.0
+         fallback so an unfilled marker is obvious in a local render instead of
+         silently showing a plausible old number. -->
+    <span class="pill"><span class="dot" aria-hidden="true"></span> <span data-motita-version>v0.0.0</span> · MIT · zero dependencies</span>
     <h1 class="hero-title"><svg viewBox="0 0 32 32" width="48" height="48" style="vertical-align:middle;margin-right:12px"><g stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M8 24 Q4 18 6 12 L4 6 L12 11 Q16 8 20 11 L28 6 L26 12 Q28 18 24 24 Z"/><circle cx="13" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="21" cy="16" r="1.5" fill="currentColor" stroke="none"/><path d="M16 20 L18 22 L20 20"/><path d="M24 24 Q28 22 30 18"/></g></svg>Motita</h1>
     <p class="lede">
       Every other agent asks you to trust it. motita runs a real check, and only
@@ -353,7 +461,7 @@
     <div class="install">
       <div class="cmd">
         <span class="prompt" aria-hidden="true">$</span>
-        <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/madkoding/motita/main/scripts/install.sh | sh</code>
+        <code id="install-cmd">curl -fsSL https://madkoding.github.io/motita/install.sh | sh</code>
         <button class="copy" type="button" data-copy="install-cmd">Copy</button>
         <span class="sr" role="status" id="copy-status"></span>
       </div>
@@ -460,7 +568,7 @@ motita -isolation</code></pre>
       </p>
 
       <div class="diagram">
-        <iframe src="architecture.html" title="Interactive motita architecture diagram" loading="lazy"></iframe>
+        <iframe src="architecture.html?theme=dark" title="Interactive motita architecture diagram" loading="lazy"></iframe>
         <div class="foot">
           <span>Interactive: switch theme, trace a relationship, export SVG or PNG.</span>
           <span class="sep"></span>
@@ -555,10 +663,10 @@ attempt 2  <span class="g">PASS</span>  anchor: exit 0 — output.txt present an
       </p>
 
       <div class="stats">
-        <div class="stat"><span class="n">100%</span><span class="l">statement coverage in every package that ships — 20 of 20 (<code>./internal/... ./cmd/...</code>), checked one by one so a gap can't hide behind an average; the CI harnesses in <code>tools/</code> are counted separately</span></div>
+        <div class="stat"><span class="n">100%</span><span class="l">statement coverage in every package that ships — 29 of 30 (<code>./internal/... ./cmd/...</code>), checked one by one so a gap can't hide behind an average; <code>internal/review</code> is the one exception and the CI harnesses in <code>tools/</code> are counted separately</span></div>
         <div class="stat"><span class="n">0</span><span class="l">external dependencies — <code>go.mod</code> has no <code>require</code> line, and there is no <code>go.sum</code></span></div>
         <div class="stat"><span class="n">9</span><span class="l">platforms CI builds, with <code>386</code> as a first-class target — each one runs its container on Linux, and gets a header and size check on Windows and macOS</span></div>
-        <div class="stat"><span class="n">6.9–7.7&nbsp;MB</span><span class="l">per published static binary, measured across all 9 targets — copy it over <code>scp</code> and walk away</span></div>
+        <div class="stat"><span class="n">9.3–10.2&nbsp;MB</span><span class="l">per published static binary, measured across all 9 targets — copy it over <code>scp</code> and walk away</span></div>
       </div>
 
       <p class="sub" style="margin-top: var(--space-6)">
