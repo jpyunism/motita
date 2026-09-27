@@ -26,6 +26,7 @@ import (
 	"github.com/madkoding/motita/internal/session"
 	"github.com/madkoding/motita/internal/skills"
 	taskpkg "github.com/madkoding/motita/internal/task"
+	"github.com/madkoding/motita/internal/usage"
 )
 
 // Runner is the callback that executes the selected mode. The TUI package uses
@@ -521,6 +522,84 @@ func (r *AppRunner) UseStore(st *procedures.Store) {
 // search still ranks, and only the value-based tie-break is off. The caller is expected to say
 // so rather than to treat it as a failure.
 func (r *AppRunner) rewardOrNil() *reward.Ledger { return r.procedures().Ledger }
+
+// Skills returns the library index, for a front end that draws it.
+func (r *AppRunner) Skills() ([]skills.Skill, error) { return r.library().List() }
+
+// Skill returns one document with its body.
+func (r *AppRunner) Skill(name string) (skills.Skill, error) { return r.library().Get(name) }
+
+// SaveSkill writes a document, creating or replacing it.
+//
+// The provenance marker is ByForeground and that is a SECURITY decision, not bookkeeping:
+// only created_by="agent" skills may be archived or merged by the curator, so a skill a
+// person wrote from the interface must never be marked as the background fork's.
+func (r *AppRunner) SaveSkill(name, body string) (skills.Skill, error) {
+	s, err := r.library().Save(name, body)
+	if err != nil {
+		return skills.Skill{}, err
+	}
+	if u := r.procedures().Usage; u != nil {
+		u.BumpPatch(s.Name, usage.ByForeground)
+		_ = u.Save()
+	}
+	return s, nil
+}
+
+// SkillTelemetry returns the lifecycle sidecar. Empty rather than nil when the ledger
+// could not be opened: a front end that ranges over nil and one that ranges over an
+// empty map draw the same thing.
+func (r *AppRunner) SkillTelemetry() map[string]usage.Entry {
+	if u := r.procedures().Usage; u != nil {
+		return u.All()
+	}
+	return map[string]usage.Entry{}
+}
+
+// SetSkillPinned pins or unpins a skill.
+//
+// It is REFUSED without a ledger rather than silently ignored: the pin is the user's veto
+// over every automatic transition, and a front end that reported success for a veto it
+// could not remember would be lying about the one thing that protects their work.
+func (r *AppRunner) SetSkillPinned(name string, pinned bool) error {
+	u := r.procedures().Usage
+	if u == nil {
+		return errors.New("no usage ledger is configured, so a skill cannot be pinned")
+	}
+	u.SetPinned(skills.Name(name), pinned)
+	return u.Save()
+}
+
+// ArchiveSkill moves a document aside; RestoreSkill brings it back. Neither is a
+// delete, and that is the promise these two exist to keep.
+//
+// Both work without a ledger: the document moves either way, and only the telemetry that
+// would have recorded it is absent.
+func (r *AppRunner) ArchiveSkill(name string) error {
+	if err := r.library().Archive(name); err != nil {
+		return err
+	}
+	if u := r.procedures().Usage; u != nil {
+		u.SetState(skills.Name(name), usage.StateArchived)
+		return u.Save()
+	}
+	return nil
+}
+
+// RestoreSkill brings an archived document back.
+func (r *AppRunner) RestoreSkill(name string) error {
+	if err := r.library().Restore(name); err != nil {
+		return err
+	}
+	if u := r.procedures().Usage; u != nil {
+		u.SetState(skills.Name(name), usage.StateActive)
+		return u.Save()
+	}
+	return nil
+}
+
+// ArchivedSkills lists what the archive holds.
+func (r *AppRunner) ArchivedSkills() ([]string, error) { return r.library().Archived() }
 
 // truncateLine bounds a string for a one-line report, on a rune boundary.
 func truncateLine(s string, n int) string {

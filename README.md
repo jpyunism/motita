@@ -332,6 +332,11 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 | `GET` `POST /v1/schedules` | list the tasks that fire on their own, or add one |
 | `PATCH` `DELETE /v1/schedules/{id}` | pause, retarget or remove one |
 | `POST /v1/schedules/{id}/run` | run it now, without moving its cadence |
+| `GET` `POST /v1/skills` | the procedure library's index, or write one |
+| `GET /v1/skills/{name}` | one document, body included |
+| `GET /v1/skills/archived` | what the curator moved aside |
+| `POST /v1/skills/{name}/pin` `/restore` | exempt it from curation, or bring it back |
+| `GET /v1/curator` `POST /v1/curator/run` | the maintenance pass: report it, or run one |
 
 The default conversation belongs to the process that started the gateway: closing it
 is refused, because that process would be left talking to a conversation that no
@@ -506,6 +511,50 @@ library instead of an empty shelf.
 Then `/good` and `/bad` land on the procedures that turn actually used, and the
 library is searched by what has worked out before. No fine-tuning, no API, no
 extra bill. Just a ledger next to a shelf.
+
+### You can see the shelf, and the shelf keeps itself tidy
+
+A library you cannot look at is a library you have to trust. `motita` serves it:
+the browser interface has a **Skill library** window — every document with what it
+is for and how often it has been used, a filter, the document itself rendered, and
+the archive behind it with a way back. `GET /v1/skills` is the same thing for
+anything else you want to build on top.
+
+Left alone, a shelf rots: procedures that stopped being true stay listed as if they
+still were. So a **curator** runs on its own — a week apart, and only when nobody
+has been talking for two hours, because a maintenance pass that fights your
+conversation for the process is a maintenance pass you will turn off. It touches
+**only the documents the agent wrote**: one you wrote by hand is yours, and the
+curator never ages it. And it uses **no model** for the work that matters:
+
+```mermaid
+flowchart LR
+    A["a document nobody<br/>has used in 14 days"] -->|"marks it"| S["<b>stale</b><br/>still listed, still searchable,<br/>now visibly suspect"]
+    S -->|"30 days later"| R["<b>archived</b><br/>out of the way, never deleted<br/>— one command brings it back"]
+    P(["<b>pinned</b><br/>you said so"]) -.->|"exempt from<br/>every one of these"| S
+
+    style A fill:#ffffff08,stroke:#ffffff22
+    style S fill:#d2992222,stroke:#d29922
+    style R fill:#ffffff08,stroke:#ffffff22
+    style P fill:#3fb95022,stroke:#3fb950
+```
+
+Nothing is ever deleted, and **pinning is the veto**: a document you pinned is
+skipped by every automatic transition, forever. That is the whole point of the
+feature — it is your library, and the machine's job is to keep it in order without
+ever being able to quietly throw away the part you care about.
+
+From the terminal it is one command away:
+
+```bash
+motita curator status   # the thresholds, the last pass, how many of each
+motita curator run      # a pass right now; --dry-run shows the plan first
+motita curator pin build-firmware
+```
+
+None of those need an API key. Tidying a shelf is filesystem work, and requiring a
+model to sort files would be requiring a model to do something that does not use
+one.
 
 ## Guardrails that can't be switched off
 
