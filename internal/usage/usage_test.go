@@ -135,6 +135,37 @@ func TestPinnedBlocksCuratorManaged(t *testing.T) {
 	}
 }
 
+// TestDisabledIsAFlagAndNotAState: turning a skill off is not archiving it. The document
+// stays in the list (badged "off"), the agent stops seeing it, and the curator must leave
+// it alone: archiving it would make "off" and "archived" the same thing, and the document
+// would leave the very list the user asked to keep it in.
+func TestDisabledIsAFlagAndNotAState(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "usage.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// An unseen skill is not disabled, and asking must not create it.
+	if l.Disabled("never-seen") {
+		t.Error("an unseen skill must not read as disabled")
+	}
+	if e, ok := l.All()["never-seen"]; ok {
+		t.Errorf("asking must not create an entry: %+v", e)
+	}
+
+	l.SetDisabled("mine", true)
+	if !l.Disabled("mine") {
+		t.Fatal("SetDisabled(true) did not stick")
+	}
+	// And it is NOT a state: the lifecycle is untouched, because turning off is not archiving.
+	if e := l.Get("mine"); e.State == StateArchived {
+		t.Errorf("disabling must not archive: %+v", e)
+	}
+	l.SetDisabled("mine", false)
+	if l.Disabled("mine") {
+		t.Error("SetDisabled(false) did not clear the flag")
+	}
+}
+
 func TestSetStateArchivedSetsTimestamp(t *testing.T) {
 	ts := time.Unix(5000, 0)
 	l := &Ledger{Now: func() time.Time { return ts }, entries: map[string]Entry{}}
@@ -359,4 +390,51 @@ func TestSaveReportsACloseFailure(t *testing.T) {
 		return errors.New("close exploded")
 	}
 	assertSeamFails(t, func() { closeFile = orig }, "close exploded")
+}
+
+// TestForgetRemovesTheEntry: the document has been deleted and its history describes something
+// that is no longer there. Leaving it behind would be a phantom entry the curator walks over, and
+// counters a future skill of the same name would inherit without having earned them.
+func TestForgetRemovesTheEntry(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "usage.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	l.BumpPatch("one", ByAgent)
+	l.SetPinned("one", true)
+	l.Forget("one")
+	if e := l.Get("one"); e.PatchCount != 0 || e.Pinned || e.CreatedBy != "" {
+		t.Errorf("the entry survived Forget: %+v", e)
+	}
+	if _, ok := l.All()["one"]; ok {
+		t.Error("the entry is still in All()")
+	}
+	// Forgetting what is not there is not an error, and must not invent an entry.
+	l.Forget("never-seen")
+	if _, ok := l.All()["never-seen"]; ok {
+		t.Error("Forget created the entry it was asked to forget")
+	}
+}
+
+// TestForgetIsRemembered: a forgotten entry that comes back with the next save would make the
+// deletion of a document a thing that only lasts until the process restarts.
+func TestForgetIsRemembered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	l, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	l.BumpPatch("one", ByAgent)
+	l.Forget("one")
+	if err := l.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	back, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopening: %v", err)
+	}
+	if _, ok := back.All()["one"]; ok {
+		t.Error("the forgotten entry was written back to disk")
+	}
 }

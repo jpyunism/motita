@@ -21,6 +21,7 @@ import (
 	"github.com/madkoding/motita/internal/onboard"
 	"github.com/madkoding/motita/internal/plan"
 	"github.com/madkoding/motita/internal/procedures"
+	"github.com/madkoding/motita/internal/review"
 	"github.com/madkoding/motita/internal/reward"
 	"github.com/madkoding/motita/internal/sandbox"
 	"github.com/madkoding/motita/internal/session"
@@ -131,6 +132,17 @@ type AppRunner struct {
 	pendingMu     sync.Mutex
 	pending       []agent.AskItem
 	pendingOrigin string
+
+	// review is the background self-improvement fork, and reviewMu guards it together with
+	// the counter below. It lives HERE and not on a planner because a planner is built per
+	// turn: one installed on a single turn would review that turn and then never be seen
+	// again, which is exactly the state the web interface was in — skills written by hand,
+	// and nothing ever reviewing the conversation they came from.
+	reviewMu sync.Mutex
+	review   *review.Review
+	// reviewIters accumulates the per-turn iteration count, because the budget the fork
+	// keys on spans turns and only the owner of the conversation can hold it.
+	reviewIters int
 
 	// transcript is the Task-mode conversation, and it lives here for the same reason the
 	// plan session does: a turn builds a NEW agent, so anything kept on the agent is thrown
@@ -364,6 +376,40 @@ func (r *AppRunner) engine() (config.Config, *llm.Client, error) {
 	return cfg, engine, err
 }
 
+// SetReview installs the background self-improvement fork.
+//
+// It is installed on the RUNNER rather than on a planner for the reason the session is: each
+// turn builds a new planner, so a fork handed to one would review that turn and never be seen
+// again. Nil turns the feature off, which is what a caller that builds its own planner gets.
+//
+// Only PLAN mode carries the fork. It is the one path here that builds a planner at all: Task
+// mode goes through internal/agent, whose actions reach the same library but which exposes no
+// planner to install a review on. Wiring the fork into Task mode is a change to internal/agent
+// and does not belong to this feature.
+func (r *AppRunner) SetReview(v *review.Review) {
+	r.reviewMu.Lock()
+	defer r.reviewMu.Unlock()
+	r.review = v
+}
+
+// reviewOrNil returns the installed fork, nil when there is none.
+func (r *AppRunner) reviewOrNil() *review.Review {
+	r.reviewMu.Lock()
+	defer r.reviewMu.Unlock()
+	return r.review
+}
+
+// countReviewIters folds a finished turn's iteration count into the running budget.
+//
+// A turn that called save_skill reports zero, so a turn that already wrote a skill down brings
+// the next review no closer — the planner resets it for exactly that reason.
+func (r *AppRunner) countReviewIters(turn int) int {
+	r.reviewMu.Lock()
+	defer r.reviewMu.Unlock()
+	r.reviewIters += turn
+	return r.reviewIters
+}
+
 // RunPlan executes the read-only planner and writes the final answer to Out.
 func (r *AppRunner) RunPlan(ctx context.Context, prompt string, progress func(string, ...any)) (string, error) {
 	cfg, engine, err := r.engine()
@@ -401,8 +447,18 @@ func (r *AppRunner) RunPlan(ctx context.Context, prompt string, progress func(st
 		// The ledger is installed so the search can break ties by what has worked, and so the
 		// planner can report which skills this turn read. Both are needed: a verdict has to
 		// land on specific skills, and only the planner knows which ones.
-		WithReward(r.rewardOrNil())
+		WithReward(r.rewardOrNil()).
+		// The telemetry sidecar, so the skill tools count what this turn read and wrote.
+		WithUsage(r.procedures().Usage).
+		// And the fork itself, which is the only way the conversation this turn ran gets
+		// reviewed at all. Both come from the RUNNER because a planner does not outlive
+		// its turn.
+		WithReview(r.reviewOrNil())
 	answer, err := planner.Run(ctx, prompt)
+	// The turn's iteration count is folded into the runner's running total whatever the
+	// outcome: it is what decides whether the fork that just looked at this turn fires
+	// again on the next one.
+	r.countReviewIters(planner.ItersSinceSkill())
 	// The skills this turn consulted are recorded whatever the outcome: a turn that failed
 	// still tells the user which procedure was in play, and that is exactly the turn they are
 	// most likely to mark.
@@ -523,8 +579,10 @@ func (r *AppRunner) UseStore(st *procedures.Store) {
 // so rather than to treat it as a failure.
 func (r *AppRunner) rewardOrNil() *reward.Ledger { return r.procedures().Ledger }
 
-// Skills returns the library index, for a front end that draws it.
-func (r *AppRunner) Skills() ([]skills.Skill, error) { return r.library().List() }
+// Skills is the index the INTERFACE draws, so it includes the documents turned off: they belong
+// in the list with a badge, which is what makes turning one back on a click rather than a hunt
+// for a file that is no longer visible. The model's own list is Library.List, and it drops them.
+func (r *AppRunner) Skills() ([]skills.Skill, error) { return r.library().Catalog() }
 
 // Skill returns one document with its body.
 func (r *AppRunner) Skill(name string) (skills.Skill, error) { return r.library().Get(name) }
@@ -593,6 +651,39 @@ func (r *AppRunner) RestoreSkill(name string) error {
 	}
 	if u := r.procedures().Usage; u != nil {
 		u.SetState(skills.Name(name), usage.StateActive)
+		return u.Save()
+	}
+	return nil
+}
+
+// SetSkillDisabled turns a skill off or back on.
+//
+// It is REFUSED without a ledger for the same reason the pin is: the flag is the promise that
+// the agent stops seeing the document, and a front end told "done" for a promise nobody could
+// remember would be lying about the one thing it was asked to change.
+func (r *AppRunner) SetSkillDisabled(name string, disabled bool) error {
+	u := r.procedures().Usage
+	if u == nil {
+		return errors.New("no usage ledger is configured, so a skill cannot be disabled")
+	}
+	u.SetDisabled(skills.Name(name), disabled)
+	return u.Save()
+}
+
+// DeleteSkill removes a document for good, and the telemetry that describes it.
+//
+// The ledger entry goes too: a name left behind would be handed to the curator as a skill that
+// no longer exists, and a document re-created under the same name later would arrive carrying
+// the counters and complaints of the one that was deleted.
+//
+// A missing ledger does not block it. The document is what the user asked to be rid of, and the
+// telemetry that would have described it is exactly the thing that is not there.
+func (r *AppRunner) DeleteSkill(name string) error {
+	if err := r.library().Delete(name); err != nil {
+		return err
+	}
+	if u := r.procedures().Usage; u != nil {
+		u.Forget(skills.Name(name))
 		return u.Save()
 	}
 	return nil

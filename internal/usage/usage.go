@@ -60,6 +60,11 @@ type Entry struct {
 	State         State      `json:"state"`
 	ArchivedAt    *time.Time `json:"archived_at,omitempty"`
 	Pinned        bool       `json:"pinned,omitempty"`
+	// Disabled means the user turned this skill off: the agent no longer sees it in
+	// the index or the search, and autonomous curation leaves it alone. The document
+	// stays on disk and stays listed in the interface, so "off" is one click away
+	// from "on" and nothing about it is lost.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // Ledger is the usage sidecar. Thread-safe, atomic saves.
@@ -196,6 +201,48 @@ func (l *Ledger) SetPinned(name string, pinned bool) {
 	e := l.entries[name]
 	e.Pinned = pinned
 	l.entries[name] = e
+	l.dirty = true
+}
+
+// SetDisabled turns a skill off or back on.
+//
+// It is deliberately NOT a lifecycle state: a disabled skill is not stale and not
+// archived, it is a document the user asked the agent to stop using. Recording it as
+// a state would make the curator's transitions and the user's decision the same field,
+// and the first automatic pass would move a skill the user had only switched off.
+func (l *Ledger) SetDisabled(name string, disabled bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e := l.entries[name]
+	e.Disabled = disabled
+	l.entries[name] = e
+	l.dirty = true
+}
+
+// Disabled reports whether a skill was turned off. A name with no entry is not
+// disabled: asking the question must not create telemetry for a skill nobody has.
+func (l *Ledger) Disabled(name string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.entries[name].Disabled
+}
+
+// Forget removes an entry and its history.
+//
+// It exists for the one operation that makes a name stop existing: a deleted document leaves no
+// subject for the counts to describe, and a survivor would be handed to the curator as a skill
+// that cannot be found. A name re-created later must start from zero rather than arrive carrying
+// the counters and complaints of the one that was deleted.
+//
+// Forgetting a name that has no entry is not an error: the caller asked for an absence and an
+// absence is what it has. It must not create one either.
+func (l *Ledger) Forget(name string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.entries[name]; !ok {
+		return
+	}
+	delete(l.entries, name)
 	l.dirty = true
 }
 

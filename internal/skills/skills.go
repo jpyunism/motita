@@ -89,6 +89,15 @@ type Library struct {
 	// It is off in New so a library is exactly the directory it was given: a test that asks
 	// what is in a directory must not be answered with what is in the executable.
 	Builtins bool
+	// Hidden, when set, reports documents that are turned OFF: they leave the index and
+	// the search, and they remain reachable by name.
+	//
+	// It is a function and not a dependency on the telemetry ledger because the ledger
+	// lives in another package that already imports this one: a Library that knew about
+	// usage.Entry would be a cycle. All the library asks is "should the model see this",
+	// and nil means "yes to everything", which is the behaviour it had before the
+	// feature existed.
+	Hidden func(name string) bool
 }
 
 // DefaultMaxFileBytes is the cap when none is configured: enough for a thorough procedure,
@@ -158,6 +167,11 @@ func Name(raw string) string {
 // the result is always inside the directory.
 func (l *Library) path(name string) string {
 	return filepath.Join(l.Dir, name+".md")
+}
+
+// hidden reports whether a document was turned off. A library with no seam hides nothing.
+func (l *Library) hidden(name string) bool {
+	return l.Hidden != nil && l.Hidden(name)
 }
 
 // builtinDir is the folder inside the embedded filesystem. It is not a valid skill name, so a
@@ -231,7 +245,9 @@ func (l *Library) Search(query string, limit int) ([]Skill, error) {
 		limit = 10
 	}
 
-	all, err := l.index()
+	// The search is the model's path, so it asks the model's question: a turned-off document
+	// must not be answerable through it either.
+	all, err := l.index(true)
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +467,38 @@ func (l *Library) Archived() ([]string, error) {
 	return out, nil
 }
 
+// Delete removes a document for good.
+//
+// It is the ONE irreversible operation this library has, which is why it is a method of
+// its own and not a flag on Archive: archiving is the maximum action that can be taken
+// back, and a caller that wants a deletion has to say so. The interface asks for a
+// confirmation before it reaches here.
+//
+// A name that is NOT on disk is refused rather than removed, and WHICH refusal it is
+// matters to the caller: a shipped procedure is a document that exists and cannot be
+// deleted, while a name that is nowhere is a lookup that failed. The two lead somewhere
+// different - one says "that one is mine to keep", the other says "check your spelling" -
+// so the second wraps ErrNotFound and a front end can answer 404 rather than 409.
+func (l *Library) Delete(name string) error {
+	n := Name(name)
+	if n == "" {
+		return errors.New("the skill name is empty")
+	}
+	p := l.path(n)
+	if _, err := os.Stat(p); err != nil {
+		if _, ok, berr := l.builtin(n); berr != nil {
+			return berr
+		} else if ok {
+			return fmt.Errorf("the skill %q is built in: it ships inside the binary and cannot be deleted", n)
+		}
+		return fmt.Errorf("%w: %q", ErrNotFound, n)
+	}
+	if err := os.Remove(p); err != nil {
+		return fmt.Errorf("could not delete the skill %q: %w", n, err)
+	}
+	return nil
+}
+
 // builtinPrefix marks the path of an embedded document. It is not a filesystem path, so a
 // document carrying it must never be handed to the disk.
 const builtinPrefix = "builtin:"
@@ -471,10 +519,28 @@ func (l *Library) body(s Skill) (string, error) {
 // List returns every skill's headings, without the bodies: it is what the model reads to
 // decide what to look up, and loading every document to answer it would cost the whole
 // library in context.
-func (l *Library) List() ([]Skill, error) { return l.index() }
+//
+// A document the user turned off is NOT here. See Catalog for the list a person draws.
+func (l *Library) List() ([]Skill, error) { return l.index(true) }
+
+// Catalog returns every skill, INCLUDING the ones turned off.
+//
+// The two lists are different because they answer different questions. List answers "what should
+// the model be offered", and a turned-off document must not be in it. Catalog answers "what does
+// this library hold", and the interface that draws it has to show the turned-off document with a
+// badge - that is what makes turning it back on one click rather than a search for a file the
+// user can no longer see.
+//
+// It is a second method rather than a flag on List because every caller of List is the model's
+// own path: offering a seam there would be offering a way to leak a document back into the
+// prompt from a call site nobody re-reads.
+func (l *Library) Catalog() ([]Skill, error) { return l.index(false) }
 
 // index reads the directory and parses the headings of each document.
-func (l *Library) index() ([]Skill, error) {
+//
+// offer selects the question being asked: true drops the documents turned off (the model's
+// list), false keeps them (the interface's).
+func (l *Library) index(offer bool) ([]Skill, error) {
 	entries, err := os.ReadDir(l.Dir)
 	// A directory that is not there yet is not an empty library when the binary SHIPS
 	// procedures: it is a fresh install, which is exactly the case the shipped ones exist for.
@@ -500,6 +566,11 @@ func (l *Library) index() ([]Skill, error) {
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
+		// A document the user turned off is not offered to the model: it keeps its
+		// place on disk and in the interface, and it leaves this list.
+		if offer && l.hidden(name) {
+			continue
+		}
 		p := filepath.Join(l.Dir, e.Name())
 		body, err := l.read(p)
 		if err != nil {
@@ -519,6 +590,9 @@ func (l *Library) index() ([]Skill, error) {
 		}
 		for name, s := range built {
 			if seen[name] {
+				continue
+			}
+			if offer && l.hidden(name) {
 				continue
 			}
 			out = append(out, s)

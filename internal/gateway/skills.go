@@ -24,6 +24,8 @@ type SkillService interface {
 	SaveSkill(name, body string) (skills.Skill, error)
 	SkillTelemetry() map[string]usage.Entry
 	SetSkillPinned(name string, pinned bool) error
+	SetSkillDisabled(name string, disabled bool) error
+	DeleteSkill(name string) error
 	ArchiveSkill(name string) error
 	RestoreSkill(name string) error
 	ArchivedSkills() ([]string, error)
@@ -48,6 +50,7 @@ type skillView struct {
 	CreatedBy  string     `json:"created_by,omitempty"`
 	State      string     `json:"state,omitempty"`
 	Pinned     bool       `json:"pinned,omitempty"`
+	Disabled   bool       `json:"disabled,omitempty"`
 	UseCount   int        `json:"use_count"`
 	ViewCount  int        `json:"view_count"`
 	PatchCount int        `json:"patch_count"`
@@ -84,6 +87,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, _ *http.Request) {
 			v.CreatedBy = string(e.CreatedBy)
 			v.State = string(e.State)
 			v.Pinned = e.Pinned
+			v.Disabled = e.Disabled
 			v.UseCount, v.ViewCount, v.PatchCount = e.UseCount, e.ViewCount, e.PatchCount
 			if !e.LastUsedAt.IsZero() {
 				at := e.LastUsedAt
@@ -165,6 +169,52 @@ func (s *Server) handlePinSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDisableSkill turns a skill off or back on.
+func (s *Server) handleDisableSkill(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Skills == nil {
+		writeError(w, http.StatusNotImplemented, noLibrary)
+		return
+	}
+	var body struct {
+		Disabled bool `json:"disabled"`
+	}
+	if !s.decodeBody(w, r, &body) {
+		return
+	}
+	// 400 and not 500: the documented failure is a gateway without a usage ledger, which
+	// is the environment the client is talking to rather than a broken server, and the
+	// message says which of the two it was.
+	if err := s.opts.Skills.SetSkillDisabled(r.PathValue("name"), body.Disabled); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteSkill removes a document for good.
+//
+// The confirmation is the FRONT END's job: this answers 204 for a request that was made,
+// and asking a question the server cannot see the answer to would be theatre.
+func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Skills == nil {
+		writeError(w, http.StatusNotImplemented, noLibrary)
+		return
+	}
+	err := s.opts.Skills.DeleteSkill(r.PathValue("name"))
+	if err == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// The two refusals are different facts and get different codes. 404 for a name that is
+	// not there: the client's to fix, and the same answer the read gives. 409 for a shipped
+	// procedure: a real skill with a real name, where what failed is the library's STATE.
+	if errors.Is(err, skills.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeError(w, http.StatusConflict, err.Error())
 }
 
 // handleRestoreSkill brings an archived document back.
