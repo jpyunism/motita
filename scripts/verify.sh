@@ -443,6 +443,23 @@ else
   tail -25 /tmp/verify_spinner.log | sed 's/^/    /'
 fi
 
+step "8e. the published site resolves, installer included"
+# The site is uploaded ON ITS OWN, so a reference that resolves because docs/ or
+# web/public/ happens to sit beside the page is dead in production while looking
+# perfect in a checkout. The pages workflow checks this before uploading, and this
+# is the same check locally — the gate that runs on every commit should be the one
+# that notices, not the deploy.
+#
+# The same script also holds the two halves of the install command together: that
+# site/install.sh is shipped at all, and that it is byte-identical to
+# scripts/install.sh. A reader copies that URL into their shell, so a copy that
+# quietly diverged is a defect they experience first.
+if site_out="$(./scripts/verify-site.sh site 2>&1)"; then
+  ok "$site_out"
+else
+  bad "$site_out"
+fi
+
 printf '\n========================================\n'
 if [ "$failures" -eq 0 ]; then
   echo "VERIFICATION PASSED: the repository is clean, tested and functional."

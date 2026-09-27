@@ -167,7 +167,7 @@ the latest release, verifies it against the release's `SHA256SUMS`, and puts it
 on your `PATH`. No Go, no Docker, no runtime on the target:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/madkoding/motita/main/scripts/install.sh | sh
+curl -fsSL https://madkoding.github.io/motita/install.sh | sh
 ```
 
 Override the version or the destination:

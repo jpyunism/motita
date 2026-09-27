@@ -29,6 +29,11 @@ func TestThePublishedDocCopiesMatchTheirSource(t *testing.T) {
 	}{
 		{"docs/REFERENCE.md", "site/REFERENCE.md", `linked from site/index.html as href="REFERENCE.md"`},
 		{"docs/TUI-DESIGN-REVIEW.md", "site/TUI-DESIGN-REVIEW.md", `linked from site/index.html as href="TUI-DESIGN-REVIEW.md"`},
+		// Not linked by a page: this one IS the URL. Pages uploads site/ alone,
+		// so the installer script has to live there to be served at
+		// https://madkoding.github.io/motita/install.sh — and the moment there
+		// are two copies, one of them is the one nobody edits.
+		{"scripts/install.sh", "site/install.sh", "published as the install URL, https://madkoding.github.io/motita/install.sh"},
 	}
 
 	for _, p := range pairs {
@@ -90,8 +95,12 @@ func TestEveryLocalSiteLinkResolves(t *testing.T) {
 }
 
 // localRefs returns the href/src values meant to resolve inside site/: relative paths only,
-// with anchors, absolute URLs and data: URIs left out. Fragments are stripped so that
-// "REFERENCE.md#section" is checked as "REFERENCE.md".
+// with anchors, absolute URLs and data: URIs left out.
+//
+// A QUERY is stripped along with the fragment, because neither is part of the resource path:
+// `architecture.html?theme=dark` is served by architecture.html, and a checker that kept the
+// query would report a working reference as dead. That is the wrong direction for a gate to
+// fail in — it is the reason this is one function instead of a regex per caller.
 func localRefs(html string) []string {
 	var refs []string
 	seen := map[string]bool{}
@@ -111,6 +120,9 @@ func localRefs(html string) []string {
 			rest = rest[end:]
 
 			if path, _, _ := strings.Cut(val, "#"); path != "" {
+				val = path
+			}
+			if path, _, _ := strings.Cut(val, "?"); path != "" {
 				val = path
 			}
 			if val == "" || seen[val] || isExternalRef(val) {
