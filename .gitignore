@@ -36,6 +36,7 @@ agent_i386
 # Test artefacts
 coverage.out
 .e2e/
+.e2e-local/
 *.test
 
 # Local plans and scratch written by the agent's own tooling, not part of the project
@@ -55,3 +56,7 @@ workspace/
 
 # Stray git repository left inside a package by a local experiment
 /internal/gateway/repo/
+
+# Python bytecode from the CDP probes and verification scripts.
+__pycache__/
+*.pyc

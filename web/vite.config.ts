@@ -16,6 +16,22 @@ export default defineConfig({
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
+      // The emoji set is 1285 WebP files, and the generated precache manifest listed every
+      // one of them: install would have pulled several MB (and the whole set into the
+      // cache) before the page was usable. They are cached on first use instead — the
+      // service worker's fetch handler stores what it serves — so an answer that shows one
+      // gets it from the cache afterwards, and an install pays nothing for the set.
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,svg,webp,woff2,webmanifest}'],
+        // `index.html` is excluded, and it is the difference between a deploy that lands and one
+        // that does not. The document names the bundle by hash, so a precached copy keeps naming
+        // the PREVIOUS bundle: the reader reloads after a fix and runs the old build. Worse, it
+        // is served at `/` and not at `/index.html`, so listing it made `cache.addAll` reject the
+        // whole install on that single 404 and no new worker ever activated. Measured against a
+        // running gateway: 84 entries, `index.html` the only 404, and the cache left empty.
+        globIgnores: ['emoji/**', 'index.html'],
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+      },
       manifest: {
         name: 'Motita',
         short_name: 'Motita',

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks'
 import { Markdown } from './Markdown'
+import { hydrationState, hydrationLog, noteActivity } from './hydration'
 
 interface Message {
   id: number
@@ -155,6 +156,12 @@ const STORAGE_KEY = 'motita:last-session'
 const SIDEBAR_KEY = 'motita:sidebar-open'
 const PROJECT_COLLAPSE_KEY = 'motita:collapsed-projects'
 const UPGRADE_DISMISS_KEY = 'motita:upgrade-dismissed'
+
+// How long the loading modal takes to leave, in milliseconds. It must match the
+// `chat-modal-leaving` transition in index.css: the state is held for exactly this long so the
+// fade-out can finish before the node is removed. Measured: without it the modal vanished in ONE
+// frame, because a node that is unmounted cannot transition.
+const MODAL_EXIT_MS = 220
 
 // ─── Scheduled tasks: reading a cadence in words, and a countdown ────────────
 //
@@ -531,12 +538,316 @@ export default function App() {
   const msgIdRef = useRef(0)
   const sessionRef = useRef('')
 
+  // Whether the conversation on screen is still being PUT there: the transcript is being
+  // fetched, or the messages are on screen but their formulas, diagrams and emoji are still
+  // being built. Both are the same thing to the reader — the conversation is not ready to
+  // read yet — and both are shown by one spinner over the message area.
+  const [chatLoading, setChatLoading] = useState(false)
+
+  // The modal's exit runs BEFORE `chatLoading` is allowed to go false, because a node that is
+  // removed from the DOM cannot transition: the reader saw it vanish in one frame. This timer is
+  // the one that holds the state during `MODAL_EXIT_MS`, so the fade-out is real.
+  const [modalLeaving, setModalLeaving] = useState(false)
+
+  // The ONLY way the modal is opened or closed. Closing runs the exit FIRST and holds the state
+  // until the fade has finished, so the modal leaves the way a reader expects instead of blinking
+  // out of existence. Both directions are idempotent: a conversation that starts more work while
+  // the modal is on its way out cancels the exit rather than stacking timers under a modal that is
+  // already returning.
+  const modalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Whether the modal is mounted right now, tracked OUTSIDE React state so `requestModal` can be
+  // idempotent without being re-created: the quiet window fires once per settle, and a close that
+  // arrives while the modal is already on its way out must not restart the timer.
+  let modalOpen = false
+  // The exit class is applied ONE FRAME after the scrim mounts. React commits the DOM before the
+  // next paint, so hiding the new element in the same commit would give the browser no starting
+  // opacity to interpolate from - and the fade-out would be a fade from 0 to 0, i.e. a blink.
+  const modalExitFrame = useRef<number | null>(null)
+  const requestModal = useCallback((open: boolean) => {
+    if (modalTimerRef.current) {
+      clearTimeout(modalTimerRef.current)
+      modalTimerRef.current = null
+    }
+    if (open) {
+      modalOpen = true
+      if (modalExitFrame.current !== null) {
+        cancelAnimationFrame(modalExitFrame.current)
+        modalExitFrame.current = null
+      }
+      setModalLeaving(false)
+      setChatLoading(true)
+      return
+    }
+    if (!modalOpen) return
+    modalOpen = false
+    if (modalExitFrame.current !== null) cancelAnimationFrame(modalExitFrame.current)
+    // Two frames, and both are needed. The FIRST mounts the scrim with no exit class, so the
+    // browser has a real starting opacity; the SECOND adds `.chat-modal-leaving`, which is what
+    // animates. This also handles the case that bit me: React batches, so setting both in one
+    // handler produced a single commit (scrim + exit class together = a blink from 0 to 0).
+    modalExitFrame.current = requestAnimationFrame(() => {
+      modalExitFrame.current = requestAnimationFrame(() => {
+        modalExitFrame.current = null
+        setModalLeaving(true)
+      })
+    })
+    modalTimerRef.current = setTimeout(() => {
+      modalTimerRef.current = null
+      setChatLoading(false)
+      setModalLeaving(false)
+    }, MODAL_EXIT_MS)
+  }, [])
+  useEffect(() => () => {
+    if (modalTimerRef.current) clearTimeout(modalTimerRef.current)
+    if (modalExitFrame.current !== null) cancelAnimationFrame(modalExitFrame.current)
+  }, [])
+
   const nextId = () => ++msgIdRef.current
 
-  // Auto-scroll on new messages or activity.
+  // Auto-scroll on new messages or activity, when the reader is following along.
+  //
+  // Two things make this trustworthy, and both were learned by measurement:
+  //
+  //   1. `behavior: 'instant'`, NOT 'auto'. 'auto' defers to the CSS `scroll-behavior`, and this
+  //      container carries Tailwind's `scroll-smooth` — so what looked like an instant jump was in
+  //      fact an animation hundreds of milliseconds long, and the deferred work's next growth
+  //      would land on top of it mid-flight and leave the view short of the end.
+  //   2. Only when already at the end. Hydration is deferred now, so every message the viewport
+  //      passes over reports a completion — scrolling on each would drag a reader who deliberately
+  //      went back up to an earlier answer down to the bottom again.
+  //
+  // How close to the end counts as "following along": one flick of the wheel is ~100px, so
+  // anything under this is somebody who has not deliberately scrolled away.
+  const BOTTOM_SLACK = 120
+
+  // Whether the reader is at the end of the conversation, tracked from scroll events rather than
+  // measured on demand. Measuring at the moment a message finishes is WRONG and was the reason the
+  // view stopped following: by then the container has already grown, so the gap is large BECAUSE
+  // of the growth, and the check reads a reader who never moved as one who scrolled away. The
+  // question is where the reader was before the growth, and only a scroll event knows that.
+  const pinnedRef = useRef(true)
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // `behavior: 'instant'` and not 'auto'. 'auto' defers to the CSS `scroll-behavior`, and this
+    // container carries Tailwind's `scroll-smooth` — so "instant" was in fact an animation,
+    // hundreds of milliseconds long, which the next 200px of formulas would land on top of. That
+    // is the "it does not go all the way down when it finishes" symptom: the last animation was
+    // interrupted by the next growth. 'instant' overrides the CSS and lands exactly where aimed.
+    el.scrollTo({ top: el.scrollHeight, behavior: 'instant' as ScrollBehavior })
+  }, [])
+
+  /**
+   * The last thing that happens: the bottom is computed and the modal comes down.
+   *
+   * This is the step that needs the page to have STOPPED, and it is why it hangs off the quiet
+   * window rather than off a completion. Measured on the way here: the conversation grew 5431px ->
+   * 5611px AFTER the last completion, with `scrollTop` unmoved, because what changes the height
+   * last — the images decoding, the font being laid out — raises no event at all. An anchor
+   * applied before that growth leaves the reader 181px short of the end, every time. Waiting for
+   * two seconds of silence is what makes the final height knowable.
+   */
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages, activity])
+    const onQuiet = () => {
+      if (pinnedRef.current) scrollToBottom()
+      // The height has settled, so this one lands. A second pass on the next frame costs nothing
+      // and covers a layout that the browser had not committed when the first was measured.
+      requestAnimationFrame(() => {
+        if (pinnedRef.current) scrollToBottom()
+      })
+    }
+    document.addEventListener('motita:chat-quiet', onQuiet)
+    return () => document.removeEventListener('motita:chat-quiet', onQuiet)
+  }, [scrollToBottom])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Only the READER'S OWN INPUT unpins them, and this is not a refinement — it is the fix for
+    // the bug that kept stranding the view. Measured: the container's `scrollTop` went 4551 ->
+    // 4511 on its own while the deferred work replaced a placeholder with a smaller drawing, and
+    // a rule that read "the position went up" as "the reader went back" unpinned them. From then
+    // on the anchor stopped following and the conversation ended 181px short, every single run.
+    // Scroll events also fire when CONTENT changes, so they cannot carry intent at all.
+    const unpin = () => {
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > BOTTOM_SLACK) pinnedRef.current = false
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) unpin()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) unpin()
+    }
+    const onScroll = () => {
+      // Being at the end always re-pins: the reader has arrived at the last line, so following
+      // the growth is what they want again.
+      if (el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK) pinnedRef.current = true
+    }
+    onScroll()
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchmove', unpin, { passive: true })
+    el.addEventListener('keydown', onKey)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchmove', unpin)
+      el.removeEventListener('keydown', onKey)
+      el.removeEventListener('scroll', onScroll)
+    }
+  }, [])
+
+  useEffect(() => {
+    // Following along only if the reader was at the end before this message arrived. Scrolling on
+    // every change would drag someone who deliberately went back up to an earlier answer.
+    if (!pinnedRef.current) return
+    scrollToBottom()
+  }, [messages, activity, scrollToBottom])
+
+  /**
+   * Follows the growth that NO event announces.
+   *
+   * Measured on a real 44-message conversation at 1400x900: the content climbed in steps
+   * (58118 -> 58158 -> ... -> 59176) and the LAST step landed at 5486ms, while the modal came
+   * down at 6826ms. The anchoring that runs on the quiet window therefore aims at a height the
+   * page has already left, and anything that grows afterwards — an image decoding, a font
+   * swapping in, mermaid replacing its own drawing — raises no event at all, so `motita:hydrated`
+   * (which only covers work a message ANNOUNCES) never fires for it. The reader sees exactly what
+   * they reported: it finishes loading and looks right, then something changes the height.
+   *
+   * A ResizeObserver on the messages is the honest instrument: it fires as part of layout, so it
+   * sees the real size of the element rather than a guess made from an event. It is also the
+   * reason this is not a timer — a slower machine, a bigger image or a cold font cache all just
+   * work, instead of needing the interval retuned.
+   *
+   * Re-anchoring stays conditional on `pinnedRef`: a reader who deliberately scrolled back is
+   * never dragged down by a message above them finishing.
+   */
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    let frame = 0
+    const settle = () => {
+      if (!pinnedRef.current) return
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (pinnedRef.current) scrollToBottom()
+      })
+    }
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(settle)
+    const seen = new WeakSet<Element>()
+    const watch = () => {
+      for (const child of Array.from(el.children)) {
+        if (seen.has(child)) continue
+        seen.add(child)
+        ro.observe(child)
+      }
+    }
+    watch()
+    ro.observe(el)
+    // The messages arrive as React renders them, so the set to observe changes over time.
+    const mo = new MutationObserver(watch)
+    mo.observe(el, { childList: true })
+    return () => {
+      cancelAnimationFrame(frame)
+      ro.disconnect()
+      mo.disconnect()
+    }
+  }, [scrollToBottom])
+
+  /**
+   * Follows the deferred work while it grows the page.
+   *
+   * A formula, a diagram and an emoji image are all built AFTER the message is rendered, and
+   * every one of them changes the height of the container. None of that changes any state,
+   * so the effect above — which reacts to state — never runs again: the page finished
+   * rendering and stayed wherever it was, which is the "it does not go all the way down"
+   * symptom.
+   *
+   * The listener is on the container with `capture`, and the signal is the `motita:hydrated`
+   * event one message dispatches when its own deferred work is done. Capture is what keeps it
+   * to THIS conversation: the container is the element the messages are rendered into, so an
+   * event from inside it is ours, and events do not cross between conversations.
+   *
+   * `scrollHeight` is therefore read twice — synchronously, and once more on the next frame.
+   * The synchronous read is the correct one for a change that has already been laid out; the
+   * rAF read catches an image or a font that only has a size after layout, and it is
+   * scheduled rather than awaited so it cannot delay the answer's own work.
+   */
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    let frame = 0
+    const onHydrated = () => {
+      // A message finishing its own deferred work does NOT clear the modal: a conversation is
+      // ready when nothing visible is still pending, which the modal effect reads from
+      // `hydrationState` on a settle. This listener is only about keeping the view at the end.
+      if (!pinnedRef.current) return
+      scrollToBottom()
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => scrollToBottom())
+    }
+    el.addEventListener('motita:hydrated', onHydrated, true)
+    return () => {
+      cancelAnimationFrame(frame)
+      el.removeEventListener('motita:hydrated', onHydrated, true)
+    }
+  }, [scrollToBottom])
+
+  /**
+   * The session modal follows the conversation, and comes down on a QUIET WINDOW.
+   *
+   * Every completion is a separate event, and a conversation arrives as many of them, so asking
+   * "are we done?" after each one gives an answer that is true and useless: it flips, and the
+   * modal flips with it — the flicker. What the reader means by "until everything is parsed" is
+   * that the page has STOPPED WORKING, and the only way to know that is to wait for a window with
+   * no activity at all. `hydration.ts` restarts that window on every registration and every
+   * completion, and raises `motita:chat-quiet` when it has run out.
+   *
+   * Only then is the bottom computed and the modal taken down, in that order: the final height is
+   * not known until the work is over, so scrolling before this is scrolling towards a guess.
+   *
+   * It also OPENS on the same signal, so a conversation that starts more work while the reader
+   * waits puts the modal back up instead of hiding it.
+   */
+  useEffect(() => {
+    // Exposed for the gate: the flicker this replaced was invisible at any single instant, so what
+    // has to be measurable is the SEQUENCE of times the modal was put up and taken down.
+    ;(window as any).__chatLoadingLog = () => ({
+      transitions: hydrationLog(),
+      visiblePending: hydrationState().visiblePending,
+      registered: hydrationState().registered,
+    })
+    const onQuiet = () => requestModal(hydrationState().visiblePending)
+    document.addEventListener('motita:chat-quiet', onQuiet)
+    return () => document.removeEventListener('motita:chat-quiet', onQuiet)
+  }, [requestModal])
+
+  // A transcript that is replaced has to be re-read even if no message ever reports: a
+  // conversation whose messages are all ABOVE the fold never starts their work, so no completion
+  // would ever arrive to close the window that `switchSession` opened.
+  useEffect(() => {
+    noteActivity()
+  }, [messages])
+
+  // Every time the modal itself is put up or taken down. This is what "flickering" means, and it is
+  // what the gate counts: the underlying readiness can change many times without the reader seeing
+  // anything, because the quiet window stands between the two.
+  useEffect(() => {
+    const log = ((window as any).__modalLog = (window as any).__modalLog || [])
+    log.push({ at: Math.round(performance.now()), loading: chatLoading })
+  }, [chatLoading])
+
+  useEffect(() => {
+    if (!chatLoading) return
+    if (messages.length === 0) return
+    const id = requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el && el.querySelector('[data-hydrating]') === null) requestModal(false)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [messages, chatLoading])
 
   // Persist sidebar preference.
   useEffect(() => {
@@ -989,6 +1300,11 @@ export default function App() {
     setActivity(null)
     setApproval(null)
     lastIdRef.current = 0
+    // The transcript is being fetched: the message area is empty until it arrives, and an
+    // empty area is not the same message as "this conversation has nothing in it yet". The
+    // spinner covers the fetch AND the deferred rendering that follows, and is cleared below
+    // once the messages are on screen and their formulas and diagrams are built.
+    requestModal(true)
     // This tab's run belongs to ONE conversation, and it keeps running while
     // the user looks elsewhere. Carry its flag into the row it belongs to, so
     // coming back to that conversation shows the spinner its own turn earned -
@@ -1019,6 +1335,8 @@ export default function App() {
       } catch { /* non-fatal */ }
     } catch {
       setState('could not load the conversation', true)
+      // Nothing will be rendered, so nothing will announce itself as hydrated either.
+      requestModal(false)
     }
   }, [])
 
@@ -2344,7 +2662,10 @@ export default function App() {
       )}
 
       {/* Main column — header, conversation, composer. */}
-      <div class="flex flex-col flex-1 min-w-0 h-[100dvh]">
+      {/* `relative` is what anchors the chat spinner (below) to THIS column: without it the
+          spinner would be positioned against the nearest positioned ancestor, or the window,
+          and would cover the sidebar too. */}
+      <div class="flex flex-col flex-1 min-w-0 h-[100dvh] relative">
         {/* Header — frosted glass over the background image.
             A phone is where this row runs out of room: title, status pill and
             provider/model pill all want width, and the two pills cannot shrink.
@@ -2396,7 +2717,9 @@ export default function App() {
           role="log"
           aria-live="polite"
           aria-label="conversation"
-          class="chat-bg flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-5 flex flex-col gap-2.5 scroll-smooth"
+          class={`chat-bg flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-5 flex flex-col gap-2.5${
+            chatLoading ? ' chat-loading' : ''}`}
+          data-chat-loading={chatLoading ? '1' : '0'}
         >
           {messages.map(m => (
             <div key={m.id} class={`msg ${m.role}${m.kind ? ' ' + m.kind : ''}`}>
@@ -2414,6 +2737,28 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {/* The session modal: a small centred card, not a full-bleed overlay.
+            It says what is happening ("Loading session") rather than covering the page, and
+            the mark turns while the transcript arrives and its formulas, diagrams and emoji
+            are built. It is a SIBLING of the scroll container rather than a child, because a
+            child of a scrolling box scrolls away with the content — and this has to stay put
+            while the page underneath changes height. */}
+        {chatLoading && (
+          <div class={`chat-modal-scrim${modalLeaving ? ' chat-modal-leaving' : ''}`}>
+            <div class="chat-modal" role="status" aria-live="polite">
+              <span class="chat-spinner" aria-hidden="true">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" focusable="false">
+                  <path d="M12,23a9.63,9.63,0,0,1-8-9.5,9.51,9.51,0,0,1,6.79-9.1A1.66,1.66,0,0,0,12,2.81h0a1.67,1.67,0,0,0-1.94-1.64A11,11,0,0,0,12,23Z">
+                    <animateTransform attributeName="transform" type="rotate" dur="0.75s"
+                      values="0 12 12;360 12 12" repeatCount="indefinite" />
+                  </path>
+                </svg>
+              </span>
+              <span class="chat-modal-label">Loading session</span>
+            </div>
+          </div>
+        )}
 
         {/* Approval panel — solid opaque, above the gradient. */}
         {approval && (

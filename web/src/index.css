@@ -553,13 +553,244 @@ body {
   line-height: 1.3em;
 }
 
-/* ─── Syntax highlighting tokens ────────────────────────────────── */
-.markdown-body .tk-key { color: #b078ff; font-weight: 600; }
-.markdown-body .tk-str { color: #50d878; }
-.markdown-body .tk-com { color: #6a6a7a; font-style: italic; }
-.markdown-body .tk-num { color: #ffb020; }
-.markdown-body .tk-fn  { color: #4cc2ff; }
-.markdown-body .tk-op  { color: #e8e8ea; }
+/* ─── Syntax highlighting (highlight.js) ─────────────────────────────
+ * Colours carried over from the hand-written highlighter this replaced, so a code
+ * block looks the same as it always did: keywords purple, strings green, comments
+ * grey-italic, numbers amber, functions blue. `tk-*` was its own vocabulary; these
+ * are the classes highlight.js actually emits. It is scoped to `.markdown-body` so
+ * it cannot leak into the rest of the interface. */
+.markdown-body .hljs-keyword,
+.markdown-body .hljs-selector-tag,
+.markdown-body .hljs-built_in,
+.markdown-body .hljs-name,
+.markdown-body .hljs-tag { color: #b078ff; font-weight: 600; }
+.markdown-body .hljs-string,
+.markdown-body .hljs-attr,
+.markdown-body .hljs-symbol,
+.markdown-body .hljs-template-variable,
+.markdown-body .hljs-addition { color: #50d878; }
+.markdown-body .hljs-comment,
+.markdown-body .hljs-quote,
+.markdown-body .hljs-meta { color: #6a6a7a; font-style: italic; }
+.markdown-body .hljs-number,
+.markdown-body .hljs-literal,
+.markdown-body .hljs-bullet { color: #ffb020; }
+.markdown-body .hljs-title,
+.markdown-body .hljs-function,
+.markdown-body .hljs-section,
+.markdown-body .hljs-selector-id { color: #4cc2ff; }
+.markdown-body .hljs-variable,
+.markdown-body .hljs-params,
+.markdown-body .hljs-property { color: #e8e8ea; }
+.markdown-body .hljs-type,
+.markdown-body .hljs-class .hljs-title,
+.markdown-body .hljs-title.class_ { color: #4cc2ff; font-weight: 600; }
+.markdown-body .hljs-deletion { color: #ff6b6b; }
+.markdown-body .hljs-emphasis { font-style: italic; }
+.markdown-body .hljs-strong { font-weight: 700; }
+
+/* ─── Math ─────────────────────────────────────────────────────────
+ * KaTeX is used with `output: 'mathml'`, so there are no font files to load and
+ * almost nothing to style: the browser lays the formula out from the MathML. These
+ * are the only rules it needs — `display="block"` centres, and an inline formula
+ * must not disturb the line height of the text it sits in. */
+.markdown-body .math-inline { display: inline-block; vertical-align: middle; }
+.markdown-body .math-block,
+.markdown-body .math-block math[display="block"] { display: block; margin: 4px 0; text-align: center; }
+.markdown-body .math-block { overflow-x: auto; }
+/* A formula KaTeX could not parse: shown, with the reason, rather than hidden. */
+.markdown-body .katex-error { color: #ff6b6b; background: rgba(255,107,107,0.06); padding: 1px 3px; border-radius: 3px; }
+
+/* ─── Diagrams (mermaid) ───────────────────────────────────────────
+ * The block is empty until the diagram is drawn, so it reserves nothing: an empty
+ * element with a border and a `min-height` would leave a visible gap for a
+ * conversation that has no diagrams at all. */
+.markdown-body .mermaid-block { margin: 4px 0; overflow-x: auto; }
+.markdown-body .mermaid-block svg { max-width: 100%; height: auto; }
+
+/* An emoji rendered from its FluentUI asset.
+ *
+ * Sizing in `em` puts it on the text's own scale: the images are 64px so they stay sharp on a
+ * 2x display, and a reader who changes the font size gets emoji that follow it. 1.25em rather
+ * than 1em because an emoji is a GLYPH — the font draws its own emoji noticeably larger than
+ * the surrounding lowercase, and an image sized to exactly 1em reads as small next to them.
+ *
+ * `vertical-align: -0.15em` is a nudge, not a measurement: a glyph sits slightly below the
+ * baseline and a replaced image sits exactly on it, so without this the images ride high next
+ * to the text they replace. It scales with the size above.
+ *
+ * The resets are the whole point of qualifying this with `img.emoji` rather than `img`. The
+ * rule for `.markdown-body img` above styles a SCREENSHOT — a border to frame it, a radius,
+ * outer margin — and every one of those is wrong on a character: an emoji came out inside a
+ * box with a gap around it, which is what a reader sees as a stray border and padding. The
+ * generic rule is not touched, because a pasted image still wants its frame. */
+.markdown-body img.emoji {
+  display: inline-block;
+  width: 1.25em;
+  height: 1.25em;
+  margin: 0 0.04em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  vertical-align: -0.15em;
+  object-fit: contain;
+}
+
+/* ─── The session modal ───────────────────────────────────────────
+ * A small centred card while the conversation is being put on screen: the transcript arriving,
+ * and its formulas, diagrams and emoji being built. Deliberately NOT a full-bleed overlay — the
+ * reader keeps sight of the page taking shape underneath, and a card that covers everything
+ * would read as a blocked interface rather than a busy one.
+ *
+ * The scrim is a SIBLING of the scroll container: anything inside a scrolling box moves with the
+ * content, and this has to stay where it is while the page underneath changes height.
+ */
+.chat-modal-scrim {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 15, 0.35);
+  z-index: 5;
+  pointer-events: none;
+  /* `transition: none` by default, so the modal can APPEAR in the same frame it is mounted: the
+   * reader is waiting, and an entrance animation only delays the information. The fade belongs to
+   * the exit and is opt-in through `.chat-modal-leaving`, which is applied one frame after the
+   * scrim appears — so the browser has a starting value to interpolate from. */
+  opacity: 1;
+  transition: none;
+}
+
+.chat-modal-leaving {
+  opacity: 0;
+  transition: opacity 220ms ease-out;
+}
+
+.chat-modal-leaving .chat-modal {
+  transform: translateY(-3px);
+}
+
+.chat-modal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(76, 194, 255, 0.25);
+  background: rgba(10, 10, 16, 0.92);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.chat-spinner {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: block;
+}
+
+.chat-spinner svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* The mark takes its colour from here, so the theme can move it in one place; the path
+   * inherits it below rather than carrying the literal the caller passed in. */
+  color: hsl(228, 97%, 42%);
+}
+
+.chat-spinner svg path {
+  fill: currentColor;
+}
+
+.chat-modal-label {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: #e8e8ea;
+}
+
+/* The conversation is held INVISIBLE while the session is being read and parsed, and only then
+ * revealed. A loading mark over half-built answers shows the reader a page that is still changing
+ * shape — formulas arriving, diagrams growing, the text reflowing under their eyes — and the scroll
+ * is chasing a height that is not final. It is `opacity` and not `visibility`/`display` because the
+ * work has to KEEP HAPPENING underneath: the observer still has to see and measure what is in view,
+ * and the layout has to be real for the bottom to be computable.
+ *
+ * The TRANSITION lives on the container itself, not inside `.chat-loading`, and that is the whole
+ * difference between a fade and a jump: a transition declared only in the loading rule disappears
+ * in the same frame the class is removed, so the chat arrived at full opacity in ONE frame —
+ * reported by the reader as "it appears very suddenly". Declared here, both directions animate.
+ *
+ * The reveal is also staggered: `.chat-loading > *` holds the messages back for 120ms so the
+ * container's fade and the content's own arrival are not the same motion. */
+main[role="log"] {
+  transition: none;
+}
+
+/* Reveal: the transition lives on the state the element is ENTERING, and on BOTH levels. A
+ * transition declared only on the hidden state is dropped in the same frame the class is removed -
+ * that is what made the chat arrive at once, and what made the MESSAGES snap while the container
+ * faded (they kept their own `transition` only under `.chat-loading`, so their opacity and their
+ * 6px offset jumped). Reported as "it appears, but the height readjusts and it ends up wrong". */
+main[role="log"]:not(.chat-loading) {
+  opacity: 1;
+  transition: opacity 420ms ease-out;
+}
+
+.chat-loading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-loading > * {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+main[role="log"]:not(.chat-loading) > * {
+  opacity: 1;
+  transform: none;
+  /* The delay staggers the messages behind the container's own fade, so the reveal is one motion
+   * rather than everything at once. */
+  transition: opacity 340ms ease-out 120ms, transform 340ms ease-out 120ms;
+}
+
+/* The rotation is `animateTransform` INSIDE the SVG, so `prefers-reduced-motion` cannot stop
+ * it with a CSS `animation: none` — an SMIL timeline is not a CSS animation. Hiding the mark
+ * would remove the only sign that something is happening, so the label stays and it is the
+ * MARK that goes: the text says the same thing without moving. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-spinner {
+    display: none;
+  }
+  /* The reveal still happens, it just stops being a motion: the reader keeps the information
+   * (the chat was not there, now it is) without the movement. */
+  main[role="log"],
+  main[role="log"] > *,
+  .chat-modal-scrim {
+    transition: none;
+  }
+}
+/* While the diagram module is being fetched there is nothing to show yet, and a
+ * spinner for something that usually resolves in milliseconds is noise. */
+.markdown-body .mermaid-block[data-done="pending"] { min-height: 0; }
+
+/* ─── What could not be rendered ───────────────────────────────────
+ * A formula, a diagram or a highlighter that failed says so, and shows the source
+ * it was given. Silently rendering nothing would leave the reader unable to tell a
+ * wrong answer from a broken page. */
+.markdown-body .render-error {
+  border-left: 2px solid #ff6b6b;
+  padding: 4px 8px;
+  margin: 4px 0;
+  background: rgba(255,107,107,0.05);
+  font-size: 0.85em;
+}
+.markdown-body .render-error p { margin: 0 0 2px; }
+.markdown-body .render-error pre { margin: 2px 0; font-size: 0.95em; }
+.markdown-body .render-error-reason { color: #ff9b9b; }
 
 /* ─── Copy buttons ──────────────────────────────────────────────── */
 .markdown-body .copy-btn {
@@ -977,8 +1208,14 @@ header button svg, aside button svg {
   transition: opacity 0.2s ease-out, background-color 0.2s ease-out, border-color 0.2s ease-out, transform 0.15s ease-out;
 }
 
-/* Sidebar session list: smooth scroll. */
-.flex-1.overflow-y-auto {
+/* Sidebar session list: smooth scroll — SCOPED to the sidebar. It was written as a bare
+ * `.flex-1.overflow-y-auto`, which also matches the CONVERSATION container (it carries both
+ * classes), so every programmatic scroll of the chat was animated. `behavior: 'instant'` cannot
+ * help there: the CSSOM's `scroll-behavior` is what decides whether a scroll is smooth when the
+ * behavior is passed as 'instant'... it is 'auto' that defers to it, so an 'instant' call is exact,
+ * while anything else in the tree that scrolls that box still animates. The reader's "the height
+ * readjusts and it ends up wrong" is a scroll caught mid-animation by the next layout change. */
+aside .flex-1.overflow-y-auto {
   scroll-behavior: smooth;
 }
 
