@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks'
 import { Markdown, MarkdownLite } from './Markdown'
+import { TermEntry, TermEmpty } from './Term'
+import { createFollower } from './smoothscroll'
 import { hydrationState, hydrationLog, noteActivity } from './hydration'
 
 interface Message {
@@ -46,8 +48,6 @@ interface ProjectInfo {
   git_url?: string
   branch?: string
   changes?: number
-  sessions?: number
-  worktrees?: number
   created: string
 }
 
@@ -532,6 +532,18 @@ export default function App() {
   const [shellLog, setShellLog] = useState<ShellEntry[]>([])
   const [termOpen, setTermOpen] = useState(false)
   const termBodyRef = useRef<HTMLDivElement>(null)
+  // Whether the terminal is following its end. It stays true until the READER scrolls up, and
+  // comes back the moment they reach the bottom again. A distance test at each update was
+  // tried first and it lost the end: the typewriter grows the text faster than any margin.
+  const termPinned = useRef(true)
+  // The reader is acting on the scroll right now (wheel, touch, or a drag on the bar). Only
+  // THAT can take the terminal off the end: growth of the content never can.
+  const termUserAt = useRef(0)
+  const termDragging = useRef(false)
+  // The highest history id the drawer has finished playing. Everything at or below it is
+  // drawn whole; the first entry above it is the one being typed; the rest wait their turn.
+  // An id and not a position, because the log is capped and its oldest entries fall off.
+  const [termSeenId, setTermSeenId] = useState(0)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [input, setInput] = useState('')
 
@@ -549,6 +561,11 @@ export default function App() {
   const [newProjectDesc, setNewProjectDesc] = useState('')
   const [newProjectDir, setNewProjectDir] = useState('')
   const [newProjectGit, setNewProjectGit] = useState('')
+  // The git identity dialog: opened when the gateway answers that git has no user, and
+  // submitted together with the project it interrupted.
+  const [showGitIdentity, setShowGitIdentity] = useState(false)
+  const [gitUserName, setGitUserName] = useState('')
+  const [gitUserEmail, setGitUserEmail] = useState('')
   const [creatingProject, setCreatingProject] = useState(false)
   // Toast notification: auto-dismissing message shown at the bottom of the screen.
   // `detail` is the second line a user reads — the human explanation.
@@ -860,6 +877,19 @@ export default function App() {
   // of the growth, and the check reads a reader who never moved as one who scrolled away. The
   // question is where the reader was before the growth, and only a scroll event knows that.
   const pinnedRef = useRef(true)
+  // chatLoading as a ref, so the follower can ask it without being rebuilt.
+  const chatLoadingNow = useRef(false)
+
+  // The smooth follower for what grows WHILE A RUN IS WORKING (a step, a thought, an answer):
+  // the view glides to the new end instead of jumping to it. It re-reads the end on every
+  // frame, so growth that lands mid-glide is followed rather than left behind - which is the
+  // reason native smooth scrolling was ruled out below. Loading a session and the hydration
+  // anchoring keep the exact, instant jump: there the height is still changing under a modal.
+  const chatFollower = useRef(createFollower(() => scrollRef.current, () => pinnedRef.current))
+  const followEnd = useCallback(() => {
+    if (chatLoadingNow.current) chatFollower.current.jump()
+    else chatFollower.current.kick()
+  }, [])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
@@ -869,6 +899,7 @@ export default function App() {
     // hundreds of milliseconds long, which the next 200px of formulas would land on top of. That
     // is the "it does not go all the way down when it finishes" symptom: the last animation was
     // interrupted by the next growth. 'instant' overrides the CSS and lands exactly where aimed.
+    chatFollower.current.stop()
     el.scrollTo({ top: el.scrollHeight, behavior: 'instant' as ScrollBehavior })
   }, [])
 
@@ -935,8 +966,8 @@ export default function App() {
     // Following along only if the reader was at the end before this message arrived. Scrolling on
     // every change would drag someone who deliberately went back up to an earlier answer.
     if (!pinnedRef.current) return
-    scrollToBottom()
-  }, [messages, activity, liveThought, trail, scrollToBottom])
+    followEnd()
+  }, [messages, activity, liveThought, trail, followEnd])
 
   /**
    * Follows the growth that NO event announces.
@@ -965,7 +996,7 @@ export default function App() {
       if (!pinnedRef.current) return
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(() => {
-        if (pinnedRef.current) scrollToBottom()
+        if (pinnedRef.current) followEnd()
       })
     }
     if (typeof ResizeObserver === 'undefined') return
@@ -988,7 +1019,7 @@ export default function App() {
       ro.disconnect()
       mo.disconnect()
     }
-  }, [scrollToBottom])
+  }, [followEnd])
 
   /**
    * Follows the deferred work while it grows the page.
@@ -1071,6 +1102,8 @@ export default function App() {
   useEffect(() => {
     const log = ((window as any).__modalLog = (window as any).__modalLog || [])
     log.push({ at: Math.round(performance.now()), loading: chatLoading })
+    chatLoadingNow.current = chatLoading
+    if (chatLoading) chatFollower.current.stop()
   }, [chatLoading])
 
   useEffect(() => {
@@ -1432,7 +1465,7 @@ export default function App() {
   // createProject sends a new project to the gateway. When a git URL is set,
   // the gateway clones the repo and returns the clone log, which we show in
   // the modal so the user can see what happened.
-  const createProject = useCallback(async () => {
+  const createProject = useCallback(async (identity?: { name: string; email: string }) => {
     const title = newProjectTitle.trim()
     let dir = newProjectDir.trim()
     const gitUrl = newProjectGit.trim()
@@ -1454,10 +1487,18 @@ export default function App() {
           description: newProjectDesc.trim(),
           dir,
           git_url: gitUrl || undefined,
+          git_user_name: identity?.name,
+          git_user_email: identity?.email,
         })
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
+        if (res.status === 409 && err.code === 'git_identity_required') {
+          // Nothing was created: ask for the user and send the same request again.
+          setShowGitIdentity(true)
+          setCreatingProject(false)
+          return
+        }
         setState(err.error || 'could not create the project', true)
         setCreatingProject(false)
         return
@@ -1478,6 +1519,7 @@ export default function App() {
       setNewProjectDesc('')
       setNewProjectDir('')
       setNewProjectGit('')
+      setShowGitIdentity(false)
       setCreatingProject(false)
     } catch (e) {
       setState('could not create the project: ' + String(e), true)
@@ -1593,6 +1635,7 @@ export default function App() {
     setActivity(null)
     setTrail([])
     setShellLog([])
+    setTermSeenId(0)
     setLiveThought(null)
     setApproval(null)
     lastIdRef.current = 0
@@ -2238,17 +2281,60 @@ export default function App() {
 
   useEffect(() => { followRef.current = followReconnect }, [followReconnect])
 
-  // Follow the terminal while it fills, unless the reader scrolled up to look at something.
+  // stickTerm keeps the end of the history in view while the terminal is following it.
+  // The follow is ANIMATED, not a jump: a line of text that arrives moves the view a little and
+  // softly, and a chunk that arrives mid-glide is followed further (see smoothscroll.ts).
+  const termFollower = useRef(createFollower(() => termBodyRef.current, () => termPinned.current, 110))
+  const stickTerm = useCallback(() => { termFollower.current.kick() }, [])
+  // A scroll event does not say who caused it: the terminal's own jump to the end raises one
+  // too. So the terminal is taken off the end only while the reader is acting on it (a wheel
+  // or touch in the last moment, or a drag on the bar) - a distance test alone unpinned it the
+  // first time an entry grew by more than its margin between two frames.
+  const onTermScroll = useCallback(() => {
+    const el = termBodyRef.current
+    if (!el) return
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (termDragging.current || performance.now() - termUserAt.current < 800) {
+      termPinned.current = gap < 24
+      // The reader has taken the scroll: whatever glide is under way stops with it.
+      if (!termPinned.current) termFollower.current.stop()
+    } else if (gap < 2) termPinned.current = true
+  }, [])
+  const markTermUser = useCallback(() => { termUserAt.current = performance.now() }, [])
+  useEffect(() => {
+    const up = () => { termDragging.current = false }
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => { window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
+  }, [])
+  // Whatever changes the terminal's content - a typed character, a new entry, a status - grows
+  // it, and following the end is the reaction to THAT, so it does not depend on every writer
+  // remembering to ask.
   useEffect(() => {
     const el = termBodyRef.current
-    if (!el || !termOpen) return
-    const nearEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    if (nearEnd) el.scrollTop = el.scrollHeight
-  }, [shellLog, termOpen])
+    if (!el || typeof MutationObserver === 'undefined') return
+    const mo = new MutationObserver(() => stickTerm())
+    mo.observe(el, { childList: true, subtree: true, characterData: true })
+    return () => mo.disconnect()
+  }, [stickTerm])
+  useEffect(() => { stickTerm() }, [shellLog, stickTerm])
 
-  // Opening it lands on the latest command.
+  // The queue the drawer plays: one entry at a time, in order, only while it is open. When
+  // commands arrive faster than they can be typed the terminal catches up by typing FASTER
+  // (see termBoost), and never by drawing an entry whole - that read as "everything at once".
+  // The only cut is a sanity cap: a history this far behind is not being watched.
+  const TERM_CAP = 30
   useEffect(() => {
-    if (termOpen && termBodyRef.current) termBodyRef.current.scrollTop = termBodyRef.current.scrollHeight
+    if (!termOpen) return
+    const pending = shellLog.filter(e => e.id > termSeenId)
+    if (pending.length > TERM_CAP) setTermSeenId(pending[pending.length - 6].id)
+  }, [termOpen, shellLog, termSeenId])
+  // Opening it lands on the latest command, and follows from there.
+  useEffect(() => {
+    if (!termOpen) return
+    termPinned.current = true
+    // Opening lands on the latest command at once; the glide is for what arrives afterwards.
+    termFollower.current.jump()
   }, [termOpen])
 
   // submit sends a task and reads the SSE response.
@@ -3014,8 +3100,15 @@ export default function App() {
                         <div class="truncate font-semibold text-[13px] text-[#c8c8d2]">{p.title}</div>
                         {/* Facts line, labelled and coloured exactly like a
                             session's: `project` says this is the project's own
-                            checkout rather than a session's, which is the
-                            distinction the number is about. */}
+                            checkout rather than a session's.
+
+                            There is deliberately NO session/worktree count
+                            here. The counts were the width the user asked to be
+                            rid of, and they are visible without them: the
+                            sessions are the rows under this header, and a
+                            session's worktree is named by its own row. The
+                            gateway still reports `sessions`/`worktrees` in
+                            GET /v1/projects for clients that want them. */}
                         <div class="flex items-center gap-x-1.5 gap-y-1 flex-wrap mt-1 text-[10px]">
                           {p.branch && (
                             <span
@@ -3024,15 +3117,6 @@ export default function App() {
                             >
                               <span class="text-accent/50 uppercase tracking-wide text-[9px]">project</span>
                               <span class="font-mono text-accent truncate max-w-[7rem]">{shortBranch(p.branch)}</span>
-                            </span>
-                          )}
-                          {!!p.worktrees && (
-                            <span
-                              class="inline-flex items-center gap-1 flex-none px-1 py-px rounded bg-[#a0a0f0]/10"
-                              title={p.worktrees === 1 ? '1 session is working in its own worktree' : `${p.worktrees} sessions are working in their own worktrees`}
-                            >
-                              <span class="text-[#a0a0f0]/50 uppercase tracking-wide text-[9px]">worktrees</span>
-                              <span class="tabular-nums text-[#a0a0f0]">{p.worktrees}</span>
                             </span>
                           )}
                           {!!p.changes && (
@@ -3044,20 +3128,6 @@ export default function App() {
                                 {p.changes === 1 ? 'change' : 'changes'}
                               </span>
                               <span class="tabular-nums text-[#f0a040]">{p.changes}</span>
-                            </span>
-                          )}
-                          {/* Session count: always present when there are
-                              sessions, even collapsed, because it is what tells
-                              the user what is inside without expanding. */}
-                          {!!p.sessions && (
-                            <span
-                              class="inline-flex items-center gap-1 flex-none px-1 py-px rounded bg-white/5"
-                              title={p.sessions === 1 ? 'This project has 1 session' : `This project has ${p.sessions} sessions`}
-                            >
-                              <span class="text-muted-foreground/60 uppercase tracking-wide text-[9px]">
-                                {p.sessions === 1 ? 'session' : 'sessions'}
-                              </span>
-                              <span class="tabular-nums text-muted-foreground">{p.sessions}</span>
                             </span>
                           )}
                         </div>
@@ -3316,7 +3386,7 @@ export default function App() {
             title={termOpen ? 'Close the terminal' : 'Open the terminal history'}
             onClick={() => setTermOpen(o => !o)}
           >
-            <span class="term-tab-label">{termOpen ? '▶' : '◀'} TTY</span>
+            <span class="term-tab-label">TTY</span>
             {shellLog.length > 0 && <span class="term-tab-count">{shellLog.length}</span>}
           </button>
           <div class="term-panel" id="term-panel" role="region" aria-label="terminal history" aria-hidden={!termOpen}>
@@ -3324,17 +3394,44 @@ export default function App() {
               <span>motita@shell — {shellLog.length} command{shellLog.length === 1 ? '' : 's'}</span>
               <button type="button" class="term-close" onClick={() => setTermOpen(false)} aria-label="Close the terminal" tabIndex={termOpen ? 0 : -1}>×</button>
             </div>
-            <div class="term-screen" ref={termBodyRef}>
-              {shellLog.length === 0 && <div class="term-empty">no commands yet<span class="term-caret" /></div>}
-              {shellLog.map(e => (
-                <div key={e.id} class="term-entry">
-                  <div class="term-line"><span class="term-prompt">$</span> {e.cmd}</div>
-                  {e.out && <pre class="term-output">{e.out}</pre>}
-                  {e.exit == null
-                    ? <div class="term-status running">running…<span class="term-caret" /></div>
-                    : <div class={`term-status${e.exit ? ' bad' : ''}`}>{e.exit === NO_RESULT ? '[no result]' : e.exit ? `[exit ${e.exit}]` : '[ok]'}</div>}
-                </div>
-              ))}
+            <div class="term-viewport">
+            <div
+              class="term-screen"
+              ref={termBodyRef}
+              onScroll={onTermScroll}
+              onWheel={markTermUser}
+              onTouchStart={markTermUser}
+              onTouchMove={markTermUser}
+              onPointerDown={() => { termDragging.current = true; markTermUser() }}
+            >
+              {shellLog.length === 0 && <TermEmpty onTick={stickTerm} />}
+              {(() => {
+                const firstPending = shellLog.find(e => e.id > termSeenId)
+                const behind = shellLog.filter(e => e.id > termSeenId).length - 1
+                // 1x when caught up, 3x with one waiting, 5x with two, and so on up to 9x.
+                const termBoost = Math.min(9, 1 + 2 * Math.max(0, behind))
+                return shellLog.map(e => (
+                  <TermEntry
+                    key={e.id}
+                    cmd={e.cmd}
+                    out={e.out}
+                    onTick={stickTerm}
+                    boost={termBoost}
+                    phase={e.id <= termSeenId ? 'done' : termOpen && e === firstPending ? 'live' : 'wait'}
+                    onFinished={() => setTermSeenId(n => Math.max(n, e.id))}
+                    status={e.exit == null
+                      ? { label: 'running…', kind: 'running' }
+                      : { label: e.exit === NO_RESULT ? '[no result]' : e.exit ? `[exit ${e.exit}]` : '[ok]', kind: e.exit && e.exit !== NO_RESULT ? 'bad' : '' }}
+                  />
+                ))
+              })()}
+            </div>
+            {/* The CRT effects are layers ABOVE the text and never inside it: they carry no
+                pointer events, so selecting and scrolling the history work as usual. */}
+            <div class="term-fx term-fx-scan" aria-hidden="true" />
+            <div class="term-fx term-fx-sweep" aria-hidden="true" />
+            <div class="term-fx term-fx-noise" aria-hidden="true" />
+            <div class="term-fx term-fx-vignette" aria-hidden="true" />
             </div>
           </div>
         </div>
@@ -3605,6 +3702,66 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Git identity modal — asked when git has no user and a repository has to be created. */}
+      {showGitIdentity && (
+        <div
+          class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4"
+          onClick={() => setShowGitIdentity(false)}
+        >
+          <form
+            class="frosted rounded-2xl border border-white/10 w-full max-w-md p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault()
+              createProject({ name: gitUserName.trim(), email: gitUserEmail.trim() })
+            }}
+          >
+            <h2 class="text-base font-semibold mb-1">Git user</h2>
+            <p class="text-sm text-[#9a9aaa] mb-4">
+              Git has no user configured. It is saved as your global git identity and signs the commits of every repository.
+            </p>
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm text-[#9a9aaa] mb-1.5">Name <span class="text-danger">*</span></label>
+                <input
+                  class="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-[#e8e8ea] focus:outline-none focus:border-accent"
+                  value={gitUserName}
+                  onInput={(e) => setGitUserName((e.target as HTMLInputElement).value)}
+                  placeholder="Ada Lovelace"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label class="block text-sm text-[#9a9aaa] mb-1.5">Email <span class="text-danger">*</span></label>
+                <input
+                  type="email"
+                  class="w-full px-3 py-2.5 rounded-xl bg-black/30 border border-white/10 text-[#e8e8ea] focus:outline-none focus:border-accent"
+                  value={gitUserEmail}
+                  onInput={(e) => setGitUserEmail((e.target as HTMLInputElement).value)}
+                  placeholder="ada@example.com"
+                />
+              </div>
+            </div>
+            <div class="flex gap-2 mt-5">
+              <button
+                type="submit"
+                class="flex-1 min-h-[44px] px-5 rounded-xl bg-accent text-white font-semibold active:scale-95 transition-transform disabled:opacity-30 disabled:cursor-not-allowed disabled:saturate-0"
+                disabled={creatingProject || !gitUserName.trim() || !gitUserEmail.includes('@')}
+              >
+                {creatingProject ? 'Saving…' : 'Save and create'}
+              </button>
+              <button
+                type="button"
+                class="min-h-[44px] px-5 rounded-xl border border-white/10 text-[#e8e8ea] active:scale-95 transition-transform"
+                onClick={() => setShowGitIdentity(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
